@@ -643,6 +643,10 @@ static int pl_tables(void)
 /* the main loop's: start when there is no table and WiFi is up; one step at a time */
 static void places_poll(void)
 {
+#ifdef RADIO_LOCAL_TEST
+    if (radio_mode == 2)                          /* (a test build's built-in MP3: no fetch to stop it) */
+        return;
+#endif
     switch (pb.state) {
     case PB_FAILED:
         if ((int32_t)(plat_ms() - pb.retry_at) < 0)

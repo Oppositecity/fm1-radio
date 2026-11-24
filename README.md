@@ -127,7 +127,7 @@ the strongest saved network it hears (hearing none, it tries each saved one in t
 | **FX** | Tap tempo for the effects. |
 | **SEL** | Browse the list of continents, countries, places and stations. |
 | **SAVE** | Favorites. |
-| **ARP** | The synth: the keys play notes over the radio. |
+| **ARP** | The sampler: the keys play a sound caught from the radio. |
 | **GLO** | The WiFi page, and back. |
 | Hold **HOME** | The controls, on the screen. |
 
@@ -154,26 +154,34 @@ press **SEL** to play a favorite, and **REC** to delete it. **HOME** (or **SAVE*
 kept in the FM-1's flash, apart from everything else; another firmware that uses the same flash (LOOM-8's samples,
 for one) erases them.
 
-### The synth
+### The sampler
 
-Press **ARP** to play the keys: a 4-voice synth over whatever the radio plays (or on its own).
+Press **ARP** to play the keys: a 4-voice sampler over whatever the radio plays (or on its own). Each of the four
+slots holds a sound caught from the radio. **C4** plays it as it was caught, and each key up or down is a semitone
+(varispeed, as on an SK-1: higher is shorter).
 
 | Control | What it does |
 |---|---|
-| **KNOB 1** | The wave: sine, triangle, saw, square, and everything between. |
-| **KNOB 2** | Filter: a low-pass, 80 Hz to 12 kHz. |
+| **FX** | Grab: the last half second you heard, into the slot. |
+| **REC** (hold) | Record the radio from now into the slot, until you let go or the slot is full. |
+| **SELECT** | The slot, 1 to 4. |
+| **SEL** | Loop on or off. |
+| **KNOB 1** | Start. |
+| **KNOB 2** | Length. |
 | **KNOB 3** | Attack: 1 ms to 2 s. |
 | **KNOB 4** | Release: 5 ms to 3 s. |
-| **SELECT** | The synth's level against the radio. |
 | **OCT-** / **OCT+** | Octaves, two each way. |
+| **PLAY** | The radio: play or stop. |
 | **HOME** or **ARP** | Back to the radio (the keys are the effects again). |
 
-Its settings are kept, a few seconds after a change.
+The slots are kept in the FM-1's flash (8-bit, 11 kHz): slots 1 to 3 hold about 2.6 s each, slot 4 about 1.5 s.
+REC first clears the slot, a moment of silence, then records. Another firmware that uses the same flash (LOOM-8's
+samples, for one) erases them. The settings are kept a few seconds after a change.
 
 ### Recording over USB
 
 Plugged into a computer, the FM-1 is also a USB sound card, "RADIO FM-1" (stereo, 44.1 kHz): record the radio, the
-effects and the synth as you hear them (after MASTER) in any audio app.
+effects and the sampler as you hear them (after MASTER) in any audio app.
 
 ### Punch-in effects
 
@@ -199,16 +207,35 @@ stop it. Hold several to mix them. The screen shows what is held, and a held key
 | 15 | Mute |
 | 16 | Lo-fi |
 
+### Glitches on the black keys
+
+| Black key | Effect |
+|---|---|
+| F#3 | Scatter: random grains from the last half second |
+| G#3 | Skip: a skipping CD, jumping back 0 to 3 sixteenths at each sixteenth |
+| A#3 | Scratch: the head rocks back and forth, a cycle a beat |
+| C#4 | Rise: a 1/16 stutter, a semitone higher each time round |
+| D#4 | Warble: tape wow and flutter |
+| F#4 | Glitch: tiny loops (5 to 40 ms), new each sixteenth |
+| G#4 | Bitflip: bursts of flipped bits |
+| A#4 | Fold: a wavefolder |
+| C#5 | Comb: a resonator at D3, the radio as a string |
+| D#5 | Shortwave: slow fading and a drifting heterodyne whistle |
+| F#5 | Gate: a 16-step gate on the tempo |
+
+Scatter, skip, scratch, rise, warble and glitch play from the history, as the stutters do (the lowest key held
+wins); the rest work on top.
+
 ![Home with stutter 1/4 held](docs/img/fx.png)
 
-The stutters, tape stop, reverse and half speed play back the last quarter second, in mono. Only one
+The stutters, tape stop, reverse and half speed play back the last half second, in mono. Only one
 of them plays at a time: with two held, the lower key wins. The filters, crushers, ring modulator,
 chops and mute work on top of them.
 
 **Tap tempo.** The stutters and chops follow a tempo, 120 BPM at start. Tap **FX** on Home in time
 with the music to set it: the last four taps count, and a pause of two seconds starts a new count. The
-screen shows the tempo for two seconds, and the FX light flashes on the beat. The history holds about a
-quarter second, so below about 108 BPM the 1/8 stutter plays a 1/16 instead.
+screen shows the tempo for two seconds, and the FX light flashes on the beat. The history holds about half a
+second, so below about 54 BPM the 1/8 stutter plays a 1/16 instead.
 
 ## Debugging over USB
 

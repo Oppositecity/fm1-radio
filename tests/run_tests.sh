@@ -5,9 +5,9 @@
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p app/build/tests
-for t in synth fav; do
+for t in sampler fav; do
     [ -f tests/${t}_test.c ] || continue
-    cc -O1 -Wall -Wno-unused-function -Ibase/include -o app/build/tests/${t}_test tests/${t}_test.c
+    cc -O1 -Wall -Wno-unused-function -Ibase/include -o app/build/tests/${t}_test tests/${t}_test.c -lm
     app/build/tests/${t}_test
 done
 if ls tests/*.host >/dev/null 2>&1; then

@@ -91,8 +91,8 @@ static uint32_t radio_reconnects, radio_retry_at;  /* the stream dropped: when t
 static char radio_why[32];
 static int16_t *pcm_tmp;                          /* MINIMP3_MAX_SAMPLES_PER_FRAME, from the heap */
 
-#define FX_HIST 6144u                             /* the FX history, half-rate samples: ~279 ms */
-static int16_t *fx_hist;
+#define FX_HIST 12288u                            /* the FX history, half-rate samples, mu-law: ~557 ms */
+static uint8_t *fx_hist;                          /* + the comb's line, + a page for the slots (radio.c FX) */
 
 /* the decoders, one at a time (the RAM): MP3's (minimp3, 11 KB) or AAC's (PacketVideo's, 53 KB), taken when a
  * stream's format is known (its Content-Type: radio_net_aac), the other's given back */
@@ -201,9 +201,11 @@ static int radio_alloc(void)
         return -1;
     }
     if (!fx_hist) {                               /* the FX history, kept: without it, no stutters */
-        fx_hist = malloc(FX_HIST * sizeof *fx_hist);
-        if (fx_hist)
-            memset(fx_hist, 0, FX_HIST * sizeof *fx_hist);
+        fx_hist = malloc(FX_HIST + 1024u + 256u);
+        if (fx_hist) {
+            memset(fx_hist, 0xFF, FX_HIST);       /* mu-law silence */
+            memset(fx_hist + FX_HIST, 0, 1024u + 256u);
+        }
     }
     return 0;
 }
@@ -336,6 +338,9 @@ static void radio_poll(void)
             n = sizeof test_mp3 - local_pos;
             if (n > LIN_MAX)
                 n = LIN_MAX;
+            if (dec_use(1))                       /* (the decoder is made as a stream needs it) */
+                return;
+            src = pcm_tmp;
             t0 = dec_us_now();
             samples = mp3dec_decode_frame(mp3, in, (int)n, pcm_tmp, &info);
             dec_timed(t0);
@@ -440,19 +445,29 @@ static void radio_poll(void)
 
 }
 
-/* ---- punch-in FX: held keys (fx_held, a bit per effect, the main loop's), applied in the audio interrupt.
- * Sources (one at a time, the lowest held): stutters, tape stop, reverse, half speed, played from a history
- * of the last ~280 ms (mono, 22 kHz, frozen while a source plays). Then the filters, the crushers, the ring
- * modulator, the chops and the mute. */
+/* ---- punch-in FX: held keys (fx_held, a bit per effect, the main loop's), applied in the audio interrupt. The
+ * white keys are upstream's 16; the black keys (bits 16..26) are the sampler fork's glitches.
+ * Sources (one at a time, the lowest held): stutters, tape stop, reverse, half speed, scatter, skip, scratch, rise,
+ * warble, glitch, played from a history of the last ~557 ms (mono, 22 kHz, mu-law; frozen while a source plays, but
+ * for the live ones, which read behind it as it goes). Then the filters, the crushers, the ring modulator, bitflip,
+ * fold, comb, shortwave, the chops and gate, and the mute. */
 enum { FX_LP, FX_HP, FX_PHONE, FX_CRUSH, FX_ST4, FX_ST8, FX_ST16, FX_ST32, FX_TAPE, FX_REV, FX_CHOP8, FX_CHOP16,
-       FX_RING, FX_HALF, FX_MUTE, FX_LOFI, FX_N };
+       FX_RING, FX_HALF, FX_MUTE, FX_LOFI,
+       FX_SCAT, FX_SKIP, FX_SCRATCH, FX_RISE, FX_WARBLE, FX_GLITCH, FX_FLIP, FX_FOLD, FX_COMB, FX_SW, FX_GATE, FX_N };
 static const char *const FX_NAME[FX_N] = {"low-pass", "high-pass", "telephone", "crush", "stutter 1/8",
     "stutter 1/16", "stutter 1/32", "stutter 1/64", "tape stop", "reverse", "chop 1/8", "chop 1/16", "ring mod",
-    "half speed", "mute", "lo-fi"};
-#define FX_SOURCES ((1u << FX_ST4) | (1u << FX_ST8) | (1u << FX_ST16) | (1u << FX_ST32) | (1u << FX_TAPE) | \
-                    (1u << FX_REV) | (1u << FX_HALF))
+    "half speed", "mute", "lo-fi",
+    "scatter", "skip", "scratch", "rise", "warble", "glitch", "bitflip", "fold", "comb", "shortwave", "gate"};
+#define FX_BIT(k) (1u << (k))
+#define FX_SOURCES (FX_BIT(FX_ST4) | FX_BIT(FX_ST8) | FX_BIT(FX_ST16) | FX_BIT(FX_ST32) | FX_BIT(FX_TAPE) | \
+                    FX_BIT(FX_REV) | FX_BIT(FX_HALF) | FX_BIT(FX_SCAT) | FX_BIT(FX_SKIP) | FX_BIT(FX_SCRATCH) | \
+                    FX_BIT(FX_RISE) | FX_BIT(FX_WARBLE) | FX_BIT(FX_GLITCH))
+#define FX_LIVE (FX_BIT(FX_SKIP) | FX_BIT(FX_WARBLE) | FX_BIT(FX_GLITCH))   /* the history goes on beneath them */
+#define FX_COMB_N 512u                            /* the comb's line, after the history (int16) */
+#define FX_COMB_D 300u                            /* D3, 147 Hz, at 44.1 kHz */
 static volatile uint32_t fx_held;
 static volatile uint32_t fx_beat = 22050u;        /* a beat in output samples (44.1 kHz): the tap tempo, 120 BPM */
+static volatile uint8_t fx_freeze;                /* GRAB copying the history: nothing written into it */
 static struct {
     uint32_t hw, half;                            /* history write index, the half-rate phase */
     uint32_t src, start;                          /* the source playing (FX_N: none), where its window starts */
@@ -461,6 +476,9 @@ static struct {
     float gate, ring_c, ring_s;                   /* the chop / mute gain; the ring oscillator */
     uint32_t crush_n, chop_n, len, held_was;      /* len: the stutter's loop, history samples */
     float crush_l, crush_r;
+    uint32_t rng, src_n, cw, flip;                /* the glitches': noise, a source's age (output samples), the comb's
+                                                   * write index, bitflip's mask (0: a gap) */
+    float dly, ph[4];                             /* a live source's delay; slow phases (turns) */
 } fx __attribute__((section(".pool")));                                     /* set up by fx_reset */
 
 static void fx_reset(void)
@@ -469,7 +487,19 @@ static void fx_reset(void)
     fx.src = FX_N;
     fx.gate = 1.0f;
     fx.ring_c = 1.0f;
+    fx.rng = 0x9E3779B9u;
 }
+
+static inline uint32_t fx_rand(void)              /* xorshift32 */
+{
+    uint32_t x = fx.rng;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return fx.rng = x;
+}
+
+static float __attribute__((noinline)) fx_sin(float t) { return fm_sin_turns(t); }   /* one copy, not six */
 
 /* a Chamberlin state-variable filter: f = 2 sin(pi fc / fs), q = 1 / Q; returns low, band or high */
 static inline float fx_svf(float *st, float x, float f, float q, int out)
@@ -482,58 +512,108 @@ static inline float fx_svf(float *st, float x, float f, float q, int out)
 
 static float fx_hist_at(float p)                  /* the history at position p (samples, wrapping), linear */
 {
-    uint32_t i = (uint32_t)p;
-    float t = p - (float)i, a = fx_hist[i % FX_HIST], b = fx_hist[(i + 1u) % FX_HIST];
-    return (a + (b - a) * t) * (1.0f / 32768.0f);
+    uint32_t i;
+    float t, a;
+    while (p < 0.0f)
+        p += (float)FX_HIST;
+    i = (uint32_t)p;
+    t = p - (float)i;
+    a = mu_dec(fx_hist[i % FX_HIST]);
+    return a + (mu_dec(fx_hist[(i + 1u) % FX_HIST]) - a) * t;
 }
 
 /* one stereo sample through the held effects (x: -1..1) */
 static void fx_process(float *l, float *r)
 {
-    uint32_t held = fx_held, src = FX_N, k;
+    uint32_t held = fx_held, src = FX_N, k, s16 = fx_beat >> 2;   /* s16: a 1/16 note, output samples */
     float m;
     for (k = 0; fx_hist && k < FX_N; k++)                    /* the lowest held source */
         if ((held >> k & 1u) && (FX_SOURCES >> k & 1u)) {
             src = k;
             break;
         }
+    if (s16 < 64u)
+        s16 = 64u;
     if (src != fx.src) {                          /* a source starts (or ends): its window in the history */
         fx.src = src;
-        if (src >= FX_ST4 && src <= FX_ST32) {    /* a 1/8 .. 1/64 note at the tempo, halved while too long */
-            uint32_t n = fx_beat >> (2u + (src - FX_ST4));   /* half a beat at 44.1 kHz = a beat >> 2 at 22.05 */
+        fx.src_n = 0;
+        fx.speed = 0.5f;
+        if ((src >= FX_ST4 && src <= FX_ST32) || src == FX_RISE) {   /* a 1/8 .. 1/64 note at the tempo, halved
+                                                   * while too long; rise: a 1/16 */
+            uint32_t n = fx_beat >> (2u + (src == FX_RISE ? 1u : src - FX_ST4));   /* half a beat at 44.1 kHz = a
+                                                   * beat >> 2 at 22.05 */
             while (n > FX_HIST - 64u)
                 n >>= 1;
             fx.len = n ? n : 1u;
             fx.start = (fx.hw + FX_HIST - fx.len) % FX_HIST;
             fx.pos = (float)fx.start;
-            fx.speed = 0.5f;
-        } else if (src == FX_TAPE || src == FX_HALF) {
-            fx.start = (fx.hw + 1u) % FX_HIST;    /* the oldest: plays the last ~280 ms */
-            fx.pos = (float)fx.start;
-            fx.speed = src == FX_TAPE ? 0.5f : 0.25f;
+        } else if (src == FX_TAPE || src == FX_HALF || src == FX_SCRATCH) {
+            fx.start = (fx.hw + 1u) % FX_HIST;    /* the oldest: plays the last ~557 ms */
+            fx.pos = src == FX_SCRATCH ? (float)((fx.hw + FX_HIST / 2u) % FX_HIST) : (float)fx.start;
+            fx.speed = src == FX_HALF ? 0.25f : 0.5f;
+            fx.ph[0] = 0.0f;
         } else if (src == FX_REV) {
             fx.pos = (float)((fx.hw + FX_HIST - 1u) % FX_HIST);
             fx.speed = -0.5f;
         }
+        fx.len = src == FX_SCAT || src == FX_GLITCH ? 0u : fx.len;   /* a new grain at once */
+        fx.dly = src == FX_SKIP ? 64.0f : 600.0f;
     }
-    if (src == FX_N) {                            /* the live sound into the history, at half rate */
-        if (fx_hist && ++fx.half & 1u)
-            fx_hist[fx.hw = (fx.hw + 1u) % FX_HIST] = (int16_t)((*l + *r) * 16383.0f);
-    } else {
-        float v = fx_hist_at(fx.pos);
-        *l = *r = v;
-        fx.pos += fx.speed;
-        if (src >= FX_ST4 && src <= FX_ST32) {
-            float end = (float)fx.start + (float)fx.len;
-            if (fx.pos >= end)
-                fx.pos -= (float)fx.len;
-        } else if (src == FX_TAPE) {
-            fx.speed *= 0.99996f;                 /* to a stop in about a second */
+    if (src == FX_N || (FX_LIVE >> src & 1u)) {   /* the live sound into the history, at half rate */
+        if (fx_hist && !fx_freeze && ++fx.half & 1u)
+            fx_hist[fx.hw = (fx.hw + 1u) % FX_HIST] = mu_enc((int32_t)((*l + *r) * 16383.0f));
+    }
+    if (src != FX_N) {
+        float v;
+        fx.src_n++;
+        if (src == FX_SCAT && !fx.len) {          /* scatter: a 30..90 ms grain from anywhere */
+            fx.len = 661u + fx_rand() % 1323u;
+            fx.pos = (float)(fx_rand() % FX_HIST);
+        } else if (src == FX_GLITCH && (fx.src_n % s16 == 1u || !fx.len)) {   /* glitch: a 5..40 ms loop near now */
+            fx.len = 110u + fx_rand() % 770u;
+            fx.start = (fx.hw + FX_HIST * 2u - fx.len - fx_rand() % 2000u) % FX_HIST;
+            fx.pos = (float)fx.start;
+        } else if (src == FX_SKIP && fx.src_n % s16 == 1u) {   /* skip: 0..3 sixteenths back, each sixteenth */
+            fx.dly = 64.0f + (float)((fx_rand() & 3u) * (s16 >> 1));
+            if (fx.dly > (float)(FX_HIST - 64u))
+                fx.dly = 64.0f;
         }
-        if (fx.pos >= (float)FX_HIST)
-            fx.pos -= (float)FX_HIST;
-        if (fx.pos < 0.0f)
-            fx.pos += (float)FX_HIST;
+        if (src == FX_SKIP || src == FX_WARBLE) { /* the live ones: behind the write head by dly (+ wow, flutter) */
+            float d = fx.dly;
+            if (src == FX_WARBLE) {
+                fx.ph[0] += 0.6f / 44100.0f;
+                fx.ph[1] += 6.5f / 44100.0f;
+                fx.ph[0] -= (float)(int)fx.ph[0];
+                fx.ph[1] -= (float)(int)fx.ph[1];
+                d += 300.0f * fx_sin(fx.ph[0]) + 25.0f * fx_sin(fx.ph[1]);
+            }
+            v = fx_hist_at((float)fx.hw - d);
+        } else {
+            v = fx_hist_at(fx.pos);
+            if (src == FX_SCRATCH) {              /* the head rocks, a cycle a beat */
+                fx.ph[0] += 1.0f / (float)fx_beat;
+                fx.ph[0] -= (float)(int)fx.ph[0];
+                fx.speed = 1.6f * fx_sin(fx.ph[0]);
+            }
+            fx.pos += fx.speed;
+            if ((src >= FX_ST4 && src <= FX_ST32) || src == FX_RISE || src == FX_GLITCH) {
+                float end = (float)fx.start + (float)fx.len;
+                if (fx.pos >= end) {
+                    fx.pos -= (float)fx.len;
+                    if (src == FX_RISE && (fx.speed *= 1.0595f) > 2.0f)   /* a semitone each round, two octaves */
+                        fx.speed = 0.5f;
+                }
+            } else if (src == FX_TAPE) {
+                fx.speed *= 0.99996f;             /* to a stop in about a second */
+            } else if (src == FX_SCAT && fx.len) {
+                fx.len--;
+            }
+            if (fx.pos >= (float)FX_HIST)
+                fx.pos -= (float)FX_HIST;
+            if (fx.pos < 0.0f)
+                fx.pos += (float)FX_HIST;
+        }
+        *l = *r = v;
     }
     if (held >> FX_LP & 1u) {                     /* 500 Hz */
         *l = fx_svf(fx.lp[0], *l, 0.0712f, 0.5f, 0);
@@ -566,26 +646,165 @@ static void fx_process(float *l, float *r)
         *l *= fx.ring_s;
         *r *= fx.ring_s;
     }
-    {   /* the chops (1/8 or 1/16 notes at the tempo, open for the first half, from the press) and the mute: a
-         * gain that moves in 2 ms, not a click */
+    if (held >> FX_FLIP & 1u) {                   /* bitflip: bursts of high bits flipped, a new mask each 1/16 */
+        if (fx.chop_n % s16 == 0u)
+            fx.flip = fx_rand() & 1u ? (fx_rand() & 0x1F00u) | 0x0400u : 0u;
+        *l = (float)((int16_t)(int32_t)(*l * 32767.0f) ^ (int16_t)fx.flip) * (0.6f / 32768.0f);
+        *r = (float)((int16_t)(int32_t)(*r * 32767.0f) ^ (int16_t)fx.flip) * (0.6f / 32768.0f);
+    }
+    if (held >> FX_FOLD & 1u) {                   /* fold: x3, folded back into -1..1 (a triangle of x), at -9 dB */
+        float t = (*l * 3.0f + 1.0f) * 0.25f;
+        *l = 0.35f - 1.4f * fm_fabsf(t - fm_floorf(t) - 0.5f);
+        t = (*r * 3.0f + 1.0f) * 0.25f;
+        *r = 0.35f - 1.4f * fm_fabsf(t - fm_floorf(t) - 0.5f);
+    }
+    if ((held >> FX_COMB & 1u) && fx_hist) {      /* comb: a resonator at D3, mono */
+        int16_t *line = (int16_t *)(fx_hist + FX_HIST);
+        float y = (*l + *r) * 0.16f + 0.93f * (float)line[(fx.cw + FX_COMB_N - FX_COMB_D) % FX_COMB_N] *
+                  (1.0f / 32768.0f);
+        y = fm_clampf(y, -1.0f, 1.0f);
+        line[fx.cw = (fx.cw + 1u) % FX_COMB_N] = (int16_t)(y * 32767.0f);
+        *l = *r = y;
+    }
+    if (held >> FX_SW & 1u) {                     /* shortwave: slow, uneven fading, a heterodyne whistle drifting */
+        float g, w;
+        fx.ph[2] += 0.23f / 44100.0f;
+        fx.ph[3] += (900.0f + 350.0f * fx_sin(fx.ph[2] * 0.3f)) / 44100.0f;
+        fx.ph[2] -= (float)(int)fx.ph[2];
+        fx.ph[3] -= (float)(int)fx.ph[3];
+        g = fx_sin(fx.ph[2]) * fx_sin(fx.ph[2] * 2.7f);
+        g = 0.55f + 0.45f * g;
+        w = 0.05f * fx_sin(fx.ph[3]);
+        *l = *l * g + w;
+        *r = *r * g + w;
+    }
+    {   /* the chops (1/8 or 1/16 notes at the tempo, open for the first half, from the press), gate (16 steps of
+         * 1/16) and the mute: a gain that moves in 2 ms, not a click */
         float target = 1.0f;
-        uint32_t chops = held & (1u << FX_CHOP8 | 1u << FX_CHOP16);
+        uint32_t chops = held & (1u << FX_CHOP8 | 1u << FX_CHOP16 | 1u << FX_GATE);
         if (chops & ~fx.held_was)
             fx.chop_n = 0;                        /* a chop pressed: it starts open, on the press */
         fx.held_was = held;
         fx.chop_n++;
-        if (chops) {
+        if (chops & (1u << FX_CHOP8 | 1u << FX_CHOP16)) {
             uint32_t period = held >> FX_CHOP16 & 1u ? fx_beat >> 2 : fx_beat >> 1;
             if (period < 64u)
                 period = 64u;
             target = fx.chop_n % period < period / 2u ? 1.0f : 0.0f;
         }
+        if (held >> FX_GATE & 1u)                 /* x.xx.x.xx.xx.x.x, a bar round */
+            target *= (float)(0xB5B6u >> (fx.chop_n / s16 % 16u) & 1u);
         if (held >> FX_MUTE & 1u)
             target = 0.0f;
         fx.gate += (target - fx.gate) * 0.011f;
         *l *= fx.gate;
         *r *= fx.gate;
     }
+}
+
+/* ---- the sampler's slots (sampler.c): GRAB (the history as it is, ~557 ms) and REC (the radio from now, until let
+ * go or the slot is full), both into flash at SMP_RATE: two history samples averaged into one. Main loop only; each
+ * erase stops everything for ~40 ms, each page ~1 ms. */
+static uint8_t smp_page_n;                        /* bytes in the page being filled (REC) */
+static uint8_t rec_on, rec_slot;
+static uint32_t rec_w, rec_rd;                    /* REC: the next page's flash offset; the history read index */
+static uint8_t *smp_page(void) { return fx_hist + FX_HIST + FX_COMB_N * 2u; }   /* 256 bytes, after the comb */
+
+static int smp_flush(uint32_t off, uint32_t n)    /* the page, n bytes, to flash at off */
+{
+    uint8_t *p = smp_page();
+    if ((off & 0xFFFu) == 0xF00u && n > 7u && p[6] == 'A' && p[7] == 'T')
+        p[7] = 'U';                               /* never an update record for the loader (plat.h) */
+    return plat_data_write(off, p, n);
+}
+
+static uint8_t smp_pair(uint32_t i)               /* history samples i, i + 1 as one */
+{
+    int32_t a = (int32_t)(mu_dec(fx_hist[i % FX_HIST]) * 32767.0f);
+    if (SMP_DIV < 2u)
+        return mu_enc(a);
+    return mu_enc((a + (int32_t)(mu_dec(fx_hist[(i + 1u) % FX_HIST]) * 32767.0f)) / 2);
+}
+
+static int smp_erase(uint32_t off, uint32_t n)    /* the sectors that n bytes from off cover */
+{
+    uint32_t e;
+    for (e = off; e < off + n; e += 0x1000u)
+        if (plat_data_erase(e))
+            return -1;
+    return 0;
+}
+
+static int smp_grab(uint32_t slot)                /* the history into slot: 0 = done */
+{
+    uint32_t off = SMP_OFF[slot], n = FX_HIST / SMP_DIV, i, from;
+    int err = 0;
+    if (!fx_hist)
+        return -1;
+    smp_hush();
+    fx_freeze = 1;
+    from = (fx.hw + 1u) % FX_HIST;                /* the oldest */
+    smp.n[slot] = 0;
+    if (smp_erase(off, n))
+        err = -1;
+    for (i = 0; !err && i < n; i++) {
+        smp_page()[i & 255u] = smp_pair(from + i * SMP_DIV);
+        if ((i & 255u) == 255u || i + 1u == n)
+            err = smp_flush(off + (i & ~255u), (i & 255u) + 1u);
+    }
+    fx_freeze = 0;
+    smp.n[slot] = err ? 0u : n;
+    return err;
+}
+
+static int smp_rec_start(uint32_t slot)           /* REC pressed: the slot erased (~0.3 s), then it records */
+{
+    if (!fx_hist)
+        return -1;
+    smp_hush();
+    smp.n[slot] = 0;
+    if (smp_erase(SMP_OFF[slot], SMP_SIZE[slot]))
+        return -1;
+    rec_slot = (uint8_t)slot;
+    rec_w = SMP_OFF[slot];
+    rec_rd = (fx.hw + 1u) % FX_HIST;              /* from what comes next */
+    smp_page_n = 0;
+    rec_on = 1;
+    return 0;
+}
+
+static void smp_rec_stop(void)                    /* what is left of the page, and the slot's length */
+{
+    if (!rec_on)
+        return;
+    if (smp_page_n && !smp_flush(rec_w, smp_page_n))
+        rec_w += smp_page_n;
+    smp.n[rec_slot] = rec_w - SMP_OFF[rec_slot];
+    rec_on = 0;
+}
+
+static int smp_rec_poll(void)                     /* REC: the history since the last pass into flash; 1 = full */
+{
+    uint32_t end = SMP_OFF[rec_slot] + SMP_SIZE[rec_slot];
+    if (!rec_on)
+        return 0;
+    while ((fx.hw + FX_HIST + 1u - rec_rd) % FX_HIST >= SMP_DIV + 1u) {   /* (the newest is left to land) */
+        smp_page()[smp_page_n++] = smp_pair(rec_rd);
+        rec_rd = (rec_rd + SMP_DIV) % FX_HIST;
+        if (!smp_page_n) {                        /* 256: a page */
+            if (smp_flush(rec_w, 256u)) {
+                smp_rec_stop();
+                return 1;
+            }
+            rec_w += 256u;
+            smp.n[rec_slot] = rec_w - SMP_OFF[rec_slot];
+            if (rec_w >= end) {
+                smp_rec_stop();
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 /* the audio interrupt's: n frames into o (24-bit in 32, stereo) */
@@ -615,8 +834,8 @@ static void radio_render(int32_t *o, uint32_t n)
         }
         if (playing)
             fx_process(&l, &rr);
-        {   /* the synth over it (app/synth.c), the sum held to full scale */
-            float sy = synth_next();
+        {   /* the sampler over it (app/sampler.c), the sum held to full scale */
+            float sy = smp_next();
             l = fm_clampf(l + sy, -1.0f, 1.0f);
             rr = fm_clampf(rr + sy, -1.0f, 1.0f);
         }

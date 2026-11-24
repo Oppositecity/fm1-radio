@@ -55,31 +55,32 @@ static const char *wifi_status_str(void)
     return wifi_st < 7u ? S[wifi_st] : "?";
 }
 
-#include "synth.c"
+#include "sampler.c"
 
-/* ---- the station of the last session (OBJ_RADIO), and the synth's settings (saved before them: older saves
- * end at st_title, and load with the synth at its defaults) */
+/* ---- the station of the last session (OBJ_RADIO), and the sampler's settings and slot lengths (saved after them:
+ * older saves, upstream's with the synth's, end before, and load with the sampler at its defaults) */
 #define RSET_MAGIC 0x52414431u                    /* "RAD1" */
 static struct {
     uint32_t magic;
     uint8_t playing, rsv;
     uint16_t country;
     char place[32], st_id[12], st_title[32];
-    synth_set_t syn;
+    smp_set_t smp;
 } rset;
 static void rset_load(void)
 {
     int n = plat_store_load(OBJ_RADIO, &rset, sizeof rset);
-    int old = (int)((char *)&rset.syn - (char *)&rset);
+    int old = (int)((char *)&rset.smp - (char *)&rset);
     if (n < old || rset.magic != RSET_MAGIC) {
         memset(&rset, 0, sizeof rset);
         rset.magic = RSET_MAGIC;
         n = 0;
     }
     if (n < (int)sizeof rset)
-        rset.syn = SYN_DEFAULT;
-    syn = rset.syn;
-    synth_init();
+        rset.smp = SMP_DEFAULT;
+    smp = rset.smp;
+    smp.slot %= SMP_SLOTS;
+    smp_init();
 }
 static void rset_save(void) { plat_store_save(OBJ_RADIO, &rset, sizeof rset); }
 
@@ -146,6 +147,7 @@ static void wire_end(void) { wire_send(0x11, 0); }
 static volatile uint8_t wire_cmd, wire_arg, wire_arg2;
 
 static const uint8_t WHITE_KEY[16] = PLAT_WHITE_KEYS;   /* F3 .. G5 */
+static const uint8_t BLACK_KEY[11] = PLAT_BLACK_KEYS;   /* the glitches (FX 16..26) */
 static uint32_t fx_wire;
 static volatile uint8_t url_restart;
 static uint32_t main_loops;
@@ -374,7 +376,7 @@ static void ui_piano(int slot, uint32_t y, int layer, uint32_t held)
                 t[0] = '<';
             cv_rect(x, 0, kw - 1, wh, (held >> k & 1u) ? K_CORAL : RGB(255, 255, 255));
             cv_rect(x + kw - 1, 0, 1, wh, K_LINE);
-            cv_text(x + (kw - 1 - text_w(&FONT_XS, t)) / 2, wh - 16, &FONT_XS, t,
+            cv_text(x + (kw - 1 - text_w(&FONT_S, t)) / 2, wh - 16, &FONT_S, t,
                     (held >> k & 1u) ? RGB(255, 255, 255) : K_TEXT);
             wi++;
         }
@@ -388,7 +390,7 @@ static void ui_piano(int slot, uint32_t y, int layer, uint32_t held)
             char t[2] = {layer < 0 ? 0 : pw_char(k, layer), 0};
             int x = x0 + wi * kw - 6;
             cv_rect(x, 0, 12, bh, (held >> k & 1u) ? K_CORAL : K_TEXT);
-            cv_text(x + (12 - text_w(&FONT_XS, t)) / 2, 6, &FONT_XS, t, RGB(255, 255, 255));
+            cv_text(x + (12 - text_w(&FONT_S, t)) / 2, 6, &FONT_S, t, RGB(255, 255, 255));
         }
     }
     cv_blit(0, y);
@@ -420,7 +422,7 @@ static const char *places_status(char *b, unsigned max);   /* places.c */
 
 static void ui_page_set(int pg);
 
-/* ---- the Synth page (ARP): the keys play app/synth.c over the radio */
+/* ---- the Sampler page (ARP): the keys play a slot (app/sampler.c) over the radio; GRAB and REC fill it */
 static uint32_t syn_keys;                         /* held, as last seen */
 static int8_t syn_key_note[NKEYS];                /* the note each held key started (an octave change between
                                                    * its down and up must not leave it sounding) */
@@ -428,49 +430,61 @@ static uint8_t syn_changed;                       /* settings changed, not saved
                                                    * change, or on leaving */
 static uint32_t syn_changed_t;
 
-static void ui_synth_wave(int slot, uint32_t y)   /* the wave's shape, and the level */
+static void smp_secs(char *b, unsigned max, uint32_t n)   /* samples as seconds, "1.23 s" */
 {
-    char key[UI_KEY], lv[24];
-    int i;
-    snprintf(lv, sizeof lv, "level %u%%", (unsigned)(syn.level * 100u / 127u));
-    snprintf(key, sizeof key, "W%u|%s|%d", syn.wave, lv, radio_st == RS_PLAYING);
+    uint32_t cs = (uint32_t)((float)n * 100.0f / SMP_RATE);
+    snprintf(b, max, "%u.%02u s", (unsigned)(cs / 100u), (unsigned)(cs % 100u));
+}
+
+static void ui_smp_wave(int slot, uint32_t y)     /* the slot's sound, the window played lit, and its state */
+{
+    char key[UI_KEY], st[24];
+    uint32_t n = smp.n[smp.slot], i, c;
+    const uint8_t *s = n ? plat_data(SMP_OFF[smp.slot]) : 0;
+    if (rec_on) {
+        st[0] = 'R', st[1] = 'E', st[2] = 'C', st[3] = ' ';
+        smp_secs(st + 4, sizeof st - 4, rec_w - SMP_OFF[rec_slot]);
+    } else if (!s) {
+        w_cpy(st, "empty: FX or REC", sizeof st);
+    } else {
+        smp_secs(st, sizeof st, n);
+        if (smp.loop)
+            w_cpy(st + strlen(st), "  loop", 8);
+    }
+    snprintf(key, sizeof key, "%u|%u|%u|%u|%s", smp.slot, (unsigned)(n >> 8), smp.start, smp.len, st);
     if (w_eq(ui_key[slot], key))
         return;
     memcpy(ui_key[slot], key, sizeof key);
     cv_begin(240, 24, K_BG);
-    {
-        float m = (float)syn.wave * (3.0f / 127.0f), t;
-        int s = (int)m;
-        if (s > 2)
-            s = 2;
-        t = m - (float)s;
-        for (i = 0; i < 96; i++) {
-            float ph = (float)i / 96.0f;
-            float v = syn_shape(s, ph, 0.0f) * (1.0f - t) + syn_shape(s + 1, ph, 0.0f) * t;
-            cv_rect(16 + i, 12 - (int32_t)(v * 9.0f), 1, 2, K_TEAL);
-        }
+    for (c = 0; s && c < 128u; c++) {             /* 128 columns, each its loudest */
+        uint32_t from = n * c / 128u, to = n * (c + 1u) / 128u, step = (to - from) / 24u + 1u;
+        float pk = 0.0f;
+        for (i = from; i < to; i += step)
+            pk = fm_maxf(pk, fm_fabsf(mu_dec(s[i])));
+        i = (uint32_t)(pk * 11.0f) + 1u;
+        cv_rect(8 + (int32_t)c, 12 - (int32_t)i, 1, 2 * i,
+                (float)from >= smp_a && (float)from < smp_b ? K_TEAL : K_DIM);
     }
-    cv_text(224 - text_w(&FONT_S, lv), (24 - (int32_t)FONT_S.h) / 2, &FONT_S, lv, K_TEXT);
+    cv_text(232 - text_w(&FONT_S, st), (24 - (int32_t)FONT_S.h) / 2, &FONT_S, st, rec_on ? K_CORAL : K_TEXT);
     cv_blit(0, y);
 }
 
 static void ui_synth(void)
 {
-    static const char *const WV[4] = {"sine", "triangle", "saw", "square"};
-    char a[24], b[24], c[24], d[24], o[16];
-    snprintf(a, sizeof a, "%s", WV[(syn.wave * 3 + 63) / 127]);
-    snprintf(b, sizeof b, "%u Hz", (unsigned)synth_cutoff_hz());
-    snprintf(c, sizeof c, "%u ms", (unsigned)synth_attack_ms());
-    snprintf(d, sizeof d, "%u ms", (unsigned)synth_release_ms());
-    snprintf(o, sizeof o, "OCT %+d", syn.octave);
-    ui_title(0, "Synth", o);
-    ui_cell(1, 8, 42, "K1", "WAVE", a, 0);
-    ui_cell(2, 120, 42, "K2", "FILTER", b, 0);
+    char a[24], b[24], c[24], d[24], o[24];
+    snprintf(a, sizeof a, "%u%%", (unsigned)(smp.start * 100u / 128u));
+    smp_secs(b, sizeof b, (uint32_t)(smp_b - smp_a));
+    snprintf(c, sizeof c, "%u ms", (unsigned)smp_attack_ms());
+    snprintf(d, sizeof d, "%u ms", (unsigned)smp_release_ms());
+    snprintf(o, sizeof o, "SLOT %u  OCT %+d", smp.slot + 1u, smp.octave);
+    ui_title(0, "Sampler", o);
+    ui_cell(1, 8, 42, "K1", "START", a, 0);
+    ui_cell(2, 120, 42, "K2", "LENGTH", b, 0);
     ui_cell(3, 8, 88, "K3", "ATTACK", c, 0);
     ui_cell(4, 120, 88, "K4", "RELEASE", d, 0);
-    ui_synth_wave(5, 136);
+    ui_smp_wave(5, 136);
     ui_piano(6, 164, -1, syn_keys);
-    ui_row(13, 214, 26, "SELECT level  OCT-/+", "HOME back", K_DIM, K_DIM, K_PANEL);
+    ui_row(13, 214, 26, "REC hold  FX grab  SEL loop", "HOME", K_DIM, K_DIM, K_PANEL);
 }
 
 static int syn_knob(uint8_t *v, int32_t d)       /* a knob's detents, 2 steps each, 0..127; changed? */
@@ -485,15 +499,30 @@ static int syn_knob(uint8_t *v, int32_t d)       /* a knob's detents, 2 steps ea
     return 1;
 }
 
-static void synth_leave(void)                     /* back to Home: notes let go, the settings kept */
+static void smp_keep(void)                        /* the settings and the slots' lengths, to the store */
 {
-    synth_all_off();
+    syn_changed = 0;
+    rset.smp = smp;
+    rset_save();
+}
+
+static void smp_done(void)                        /* GRAB or REC finished: what is in the slot, kept */
+{
+    smp_update();
+    smp_keep();
+    ui_dirty = 1;
+}
+
+static void synth_leave(void)                     /* back to Home: notes let go, a recording ended, settings kept */
+{
+    smp_all_off();
     syn_keys = 0;
-    if (syn_changed) {
-        syn_changed = 0;
-        rset.syn = syn;
-        rset_save();
+    if (rec_on) {
+        smp_rec_stop();
+        smp_done();
     }
+    if (syn_changed)
+        smp_keep();
     ui_page_set(PG_HOME);
 }
 
@@ -761,6 +790,9 @@ static void input(void)
         for (w = 0; w < 16; w++)
             if (keys >> WHITE_KEY[w] & 1u)
                 h |= 1u << w;
+        for (w = 0; w < 11; w++)
+            if (keys >> BLACK_KEY[w] & 1u)
+                h |= 1u << (16 + w);
         fx_held = h | fx_wire;
     }
     if (ui_page == PG_HOME) {
@@ -864,31 +896,52 @@ static void input(void)
         syn_keys = keys;
         for (k = 0; k < NKEYS; k++) {
             if (off >> k & 1u)
-                synth_note_off(syn_key_note[k]);
+                smp_note_off(syn_key_note[k]);
             if (on >> k & 1u) {
-                syn_key_note[k] = (int8_t)(53 + k + 12 * syn.octave);   /* F3 = MIDI 53 */
-                synth_note_on(syn_key_note[k]);
+                syn_key_note[k] = (int8_t)(53 + k + 12 * smp.octave);   /* F3 = MIDI 53; C4 plays it as recorded */
+                smp_note_on(syn_key_note[k]);
             }
         }
-        ch |= syn_knob(&syn.wave, plat_enc(EN_K1));
-        ch |= syn_knob(&syn.cutoff, plat_enc(EN_K2));
-        ch |= syn_knob(&syn.attack, plat_enc(EN_K3));
-        ch |= syn_knob(&syn.release, plat_enc(EN_K4));
-        ch |= syn_knob(&syn.level, turn);
-        if ((down & (1u << B_OCTDN)) && syn.octave > -2)
-            syn.octave--, ch = 1;
-        if ((down & (1u << B_OCTUP)) && syn.octave < 2)
-            syn.octave++, ch = 1;
+        ch |= syn_knob(&smp.start, plat_enc(EN_K1));
+        ch |= syn_knob(&smp.len, plat_enc(EN_K2));
+        ch |= syn_knob(&smp.attack, plat_enc(EN_K3));
+        ch |= syn_knob(&smp.release, plat_enc(EN_K4));
+        if (turn && !rec_on) {                    /* SELECT: the slot */
+            int sl = (int)smp.slot + turn;
+            sl = sl < 0 ? 0 : sl >= SMP_SLOTS ? SMP_SLOTS - 1 : sl;
+            if (sl != smp.slot) {
+                smp_hush();
+                smp.slot = (uint8_t)sl;
+                ch = 1;
+            }
+        }
+        if (down & (1u << B_SEL))
+            smp.loop ^= 1u, ch = 1;
+        if ((down & (1u << B_OCTDN)) && smp.octave > -2)
+            smp.octave--, ch = 1;
+        if ((down & (1u << B_OCTUP)) && smp.octave < 2)
+            smp.octave++, ch = 1;
+        if (down & (1u << B_PLAY))
+            radio_toggle();
+        if ((down & (1u << B_FX)) && !rec_on) {   /* GRAB: the last ~0.55 s heard, now in the slot */
+            smp_grab(smp.slot);
+            smp_done();
+        }
+        if ((down & (1u << B_REC)) && !rec_on) {  /* REC: from now, while held */
+            if (smp_rec_start(smp.slot))
+                smp_done();
+            ui_dirty = 1;
+        } else if (rec_on && !(now & (1u << B_REC))) {
+            smp_rec_stop();
+            smp_done();
+        }
         if (ch) {
-            synth_update();
+            smp_update();
             syn_changed = 1;
             syn_changed_t = plat_ms();
         }
-        if (syn_changed && plat_ms() - syn_changed_t >= 5000u) {   /* kept through a power-off too */
-            syn_changed = 0;
-            rset.syn = syn;
-            rset_save();
-        }
+        if (syn_changed && plat_ms() - syn_changed_t >= 5000u)   /* kept through a power-off too */
+            smp_keep();
         if (down & ((1u << B_HOME) | (1u << B_ARP)))
             synth_leave();
     } else if (ui_page == PG_FAV && fav) {
@@ -932,21 +985,27 @@ int app_expect(const char *what, int *got)       /* the host simulator's checks 
     int i, n = 0;
     if (!strcmp(what, "page"))
         *got = ui_page;
-    else if (!strcmp(what, "syn_wave"))
-        *got = syn.wave;
-    else if (!strcmp(what, "syn_cutoff"))
-        *got = syn.cutoff;
-    else if (!strcmp(what, "syn_attack"))
-        *got = syn.attack;
-    else if (!strcmp(what, "syn_release"))
-        *got = syn.release;
-    else if (!strcmp(what, "syn_level"))
-        *got = syn.level;
-    else if (!strcmp(what, "syn_octave"))
-        *got = syn.octave;
-    else if (!strcmp(what, "syn_voices")) {
-        for (i = 0; i < SYN_VOICES; i++)
-            n += syv[i].on;
+#ifdef RADIO_LOCAL_TEST
+    else if (!strcmp(what, "local_play"))         /* the built-in MP3 (a test build): plays, as wire 0x40 2 */
+        radio_want = 1, radio_play(2), *got = 0;
+    else if (!strcmp(what, "radio_st"))
+        *got = (int)radio_st;
+    else if (!strcmp(what, "fx_hw"))
+        *got = (int)fx.hw;
+#endif
+    else if (!strcmp(what, "smp_slot"))
+        *got = smp.slot;
+    else if (!strcmp(what, "smp_n"))
+        *got = (int)smp.n[smp.slot];
+    else if (!strcmp(what, "smp_loop"))
+        *got = smp.loop;
+    else if (!strcmp(what, "smp_octave"))
+        *got = smp.octave;
+    else if (!strcmp(what, "smp_rec"))
+        *got = rec_on;
+    else if (!strcmp(what, "smp_voices")) {
+        for (i = 0; i < SMP_VOICES; i++)
+            n += smv[i].on;
         *got = n;
     } else if (!strcmp(what, "fav_open")) {
         *got = fav != 0;
@@ -970,9 +1029,9 @@ static void lights(void)
         if ((plat_ms() - tempo_t0) % (60000u / tempo_bpm) < 90u)
             lb |= 1u << B_FX;                     /* FX flashes on the beat */
         if (radio_st == RS_PLAYING)               /* the FX keys, and the held ones off as they play */
-            for (w = 0; w < 16; w++)
+            for (w = 0; w < 27; w++)
                 if (!(fx_held >> w & 1u))
-                    lk |= 1u << WHITE_KEY[w];
+                    lk |= 1u << (w < 16 ? WHITE_KEY[w] : BLACK_KEY[w - 16]);
     } else if (ui_page == PG_BROWSE) {
         lb = 1u << B_SEL | 1u << B_HOME | 1u << B_PLAY;
     } else if (ui_page == PG_WIFI) {
@@ -984,7 +1043,8 @@ static void lights(void)
         lk = (1u << NKEYS) - 1u;
     }
     if (ui_page == PG_SYNTH) {
-        lb = 1u << B_HOME | 1u << B_ARP | 1u << B_OCTDN | 1u << B_OCTUP;
+        lb = 1u << B_HOME | 1u << B_ARP | 1u << B_OCTDN | 1u << B_OCTUP | 1u << B_SEL | 1u << B_PLAY |
+             (rec_on ? 0u : 1u << B_FX) | (rec_on && plat_ms() % 400u < 200u ? 0u : 1u << B_REC);
         lk = ((1u << NKEYS) - 1u) & ~syn_keys;    /* the keys lit, the held ones off */
     }
     if (ui_page == PG_FAV)
@@ -1040,6 +1100,8 @@ void app_loop(void)
     if (wifi_st != WS_CONNECTED && radio_mode != 2 && radio_st != RS_OFF && radio_st != RS_ERROR)
         radio_stop();                             /* the network went: so does the stream */
     radio_poll();
+    if (rec_on && smp_rec_poll())                 /* REC: the history into the slot's flash; full: done */
+        smp_done();
 }
 
 #ifdef PLAT_WEB

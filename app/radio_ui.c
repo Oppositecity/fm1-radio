@@ -312,8 +312,8 @@ static void ui_cell(int slot, uint32_t x, uint32_t y, const char *knob, const ch
         return;
     memcpy(ui_key[slot], key, sizeof key);
     cv_begin(112, 44, hi ? K_PANEL : K_BG);
-    cv_text(6, 2, &FONT_XS, label, K_DIM);
-    cv_text(106 - text_w(&FONT_XS, knob), 2, &FONT_XS, knob, K_LINE);
+    cv_text(6, 1, &FONT_S, label, K_DIM);       /* (FONT_S, not XS: the fork's 7 KB of flash) */
+    cv_text(106 - text_w(&FONT_S, knob), 2, &FONT_S, knob, K_LINE);
     w_cpy(v, val, sizeof v);
     while (v[0] && text_w(&FONT_S, v) > 100)      /* cut to fit */
         v[strlen_(v) - 1] = 0;
@@ -529,7 +529,7 @@ static void ui_help(void)
 {
     static const char *const L[9][2] = {
         {"KNOB 1..4", "continent .. station"}, {"SELECT", "next station"}, {"SEL", "browse the world"},
-        {"PLAY", "play / stop"}, {"SAVE", "favorites"}, {"ARP", "synth on the keys"}, {"GLO", "WiFi, networks"},
+        {"PLAY", "play / stop"}, {"SAVE", "favorites"}, {"ARP", "sampler on the keys"}, {"GLO", "WiFi, networks"},
         {"MASTER", "volume"}, {"keys / FX", "hold for FX / tap tempo"}};
     int i;
     ui_title(0, "Controls", "");

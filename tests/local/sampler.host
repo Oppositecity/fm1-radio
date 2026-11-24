@@ -1,0 +1,120 @@
+# (a RADIO_LOCAL_TEST build: the built-in MP3) the black-key glitches, then the sampler: GRAB, REC, keys, kept
+wait 500
+master 4096
+expect local_play 0
+wait 1500
+wav fx_white.wav
+key 7 down
+wait 1200
+key 7 up
+key 16 down
+wait 1000
+key 16 up
+key 14 down
+wait 1500
+key 14 up
+wait 300
+wavstop
+wav fx_black.wav
+key 1 down
+wait 1500
+shot fx_held.png
+key 1 up
+key 3 down
+wait 1500
+key 3 up
+key 5 down
+wait 1500
+key 5 up
+key 8 down
+wait 1500
+key 8 up
+key 10 down
+wait 1500
+key 10 up
+key 13 down
+wait 1500
+key 13 up
+key 15 down
+wait 1500
+key 15 up
+key 17 down
+wait 1500
+key 17 up
+key 20 down
+wait 1500
+key 20 up
+key 22 down
+wait 3000
+key 22 up
+key 25 down
+wait 1500
+key 25 up
+wait 500
+wavstop
+tap ARP
+wait 50
+expect page 6
+expect smp_slot 0
+tap FX
+wait 100
+expect smp_n 6144
+wait 300
+wav smp_grab.wav
+key 7 down
+wait 700
+key 7 up
+wait 400
+key 19 down
+wait 400
+key 19 up
+wait 300
+key 2 down
+wait 1000
+key 2 up
+wait 500
+tap SEL
+key 7 down
+key 11 down
+key 14 down
+wait 2000
+key 7 up
+key 11 up
+key 14 up
+wait 600
+wavstop
+tap SEL
+wait 800
+spin SELECT 1
+wait 50
+expect smp_slot 1
+expect radio_st 3
+press REC
+wait 200
+expect smp_rec 1
+wait 3200
+shot sampler_rec.png
+expect smp_rec 0
+expect smp_n 28672
+release REC
+wait 300
+wav smp_rec.wav
+key 7 down
+wait 2800
+key 7 up
+wait 300
+key 0 down
+wait 1500
+key 0 up
+wait 300
+wavstop
+shot sampler.png
+tap HOME
+wait 100
+expect page 0
+reboot
+wait 500
+tap ARP
+wait 50
+expect smp_slot 1
+expect smp_n 28672

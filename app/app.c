@@ -62,7 +62,7 @@ static const char *wifi_status_str(void)
 #define RSET_MAGIC 0x52414431u                    /* "RAD1" */
 static struct {
     uint32_t magic;
-    uint8_t playing, rsv;
+    uint8_t playing, rdown;                       /* rdown (was spare, 0): the radio's level, PRESETS steps below full */
     uint16_t country;
     char place[32], st_id[12], st_title[32];
     smp_set_t smp;
@@ -151,6 +151,9 @@ static const uint8_t BLACK_KEY[11] = PLAT_BLACK_KEYS;   /* the glitches (FX 16..
 static uint32_t fx_wire;
 static uint32_t fx_latch;                         /* ENV on Home: the effects kept on after the keys are let go */
 static uint8_t help_from_smp;                     /* the controls page shows the sampler's, and goes back to it */
+#define SMP_RADIO_STEPS 20u
+static uint8_t smp_radio = SMP_RADIO_STEPS;       /* PRESETS, on every page: the radio's level, 5% a detent (the
+                                                   * keys stay as they are); kept in rset.rdown */
 static volatile uint8_t url_restart;
 static uint32_t main_loops;
 
@@ -431,9 +434,6 @@ static int8_t syn_key_note[NKEYS];                /* the note each held key star
 static uint8_t syn_changed;                       /* settings changed, not saved yet: saved 5 s after the last
                                                    * change, or on leaving */
 static uint32_t syn_changed_t;
-#define SMP_RADIO_STEPS 20u
-static uint8_t smp_radio = SMP_RADIO_STEPS;       /* PRESETS on the sampler page: the radio's level, 5% a detent
-                                                   * (the keys stay as they are; Home always has it all) */
 static int arp_k = -1, arp_note = -1;             /* ARP: the key last played (-1: none yet), its note sounding */
 static uint32_t arp_t;                            /* its step's start (ms) */
 
@@ -796,6 +796,7 @@ void app_init(void)
     rg_open();
     fx_reset();
     rset_load();
+    smp_radio = (uint8_t)(rset.rdown < SMP_RADIO_STEPS ? SMP_RADIO_STEPS - rset.rdown : 0u);
 }
 
 void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
@@ -827,8 +828,19 @@ static uint32_t btn_prev;
 static void input(void)
 {
     uint32_t now = plat_buttons(), down = now & ~btn_prev, up = btn_prev & ~now;
-    int32_t turn = plat_enc(EN_SELECT), preset = plat_enc(EN_PRESET);   /* (read everywhere: no jump later) */
+    int32_t turn = plat_enc(EN_SELECT), preset = plat_enc(EN_PRESET);
+    static uint32_t lv_t;                         /* the radio's level changed (ms), kept 5 s after; 0: kept */
     btn_prev = now;
+    if (preset) {                                 /* PRESETS, on every page: the radio's level (the keys stay) */
+        int32_t v = (int32_t)smp_radio + preset;
+        smp_radio = (uint8_t)(v < 0 ? 0 : v > (int32_t)SMP_RADIO_STEPS ? SMP_RADIO_STEPS : v);
+        rset.rdown = (uint8_t)(SMP_RADIO_STEPS - smp_radio);
+        lv_t = plat_ms() | 1u;
+        ui_dirty = 1;
+    } else if (lv_t && plat_ms() - lv_t >= 5000u) {
+        lv_t = 0;
+        rset_save();
+    }
     {   /* GLO: WiFi, from anywhere; HOME held: the controls (the sampler's, from its page), back on letting go */
         static uint32_t home_t;
         if (down & (1u << B_GLO))
@@ -1014,10 +1026,6 @@ static void input(void)
             syn_keys = 0;                         /* the held keys start again (as notes, or the arpeggio) */
             ch = 1;
         }
-        if (preset) {                             /* PRESETS: the radio's level */
-            int32_t v = (int32_t)smp_radio + preset;
-            smp_radio = (uint8_t)(v < 0 ? 0 : v > (int32_t)SMP_RADIO_STEPS ? SMP_RADIO_STEPS : v);
-        }
         if (down & (1u << B_EDIT))
             smp.fl ^= 1u, ch = 1;
         if (down & (1u << B_SEQ))                 /* dry, resample, through FX */
@@ -1181,9 +1189,9 @@ void app_frame(void)
 {
     static uint32_t last_draw;
     input();
-    {   /* the radio's level: the sampler page's PRESETS (squared: a fader), all of it elsewhere */
+    {   /* the radio's level: PRESETS, squared (a fader) */
         float lv = (float)smp_radio * (1.0f / (float)SMP_RADIO_STEPS);
-        radio_lv_t = ui_page == PG_SYNTH || (ui_page == PG_HELP && help_from_smp) ? lv * lv : 1.0f;
+        radio_lv_t = lv * lv;
     }
     wire_actions();
     scan_refresh();

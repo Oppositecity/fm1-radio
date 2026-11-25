@@ -124,6 +124,7 @@ the strongest saved network it hears (hearing none, it tries each saved one in t
 | **KNOB 3** | Place: a city or town, A to Z. |
 | **KNOB 4** or **SELECT** | Station in the place. |
 | **MASTER** | Volume. |
+| **PRESETS** | The radio's level (the sampler's keys stay as they are): kept, and shown after the bit rate when below 100%. |
 | **FX** | Tap tempo for the effects. |
 | **SEL** | Browse the list of continents, countries, places and stations. |
 | **SAVE** | Favorites. |
@@ -178,7 +179,7 @@ slots holds a sound caught from the radio. **C4** plays it as it was caught, and
 | **LFO** | Arpeggio on or off: the held keys in turn, low to high, a 1/16 each at the tap tempo. |
 | **SEQ** | Dry (over the effects), resample (your playing goes into the history too, so **FX** grabs it with the radio), or thru FX (through the Home effects: latch some with **ENV** first). |
 | **PLAY** | The radio: play or stop. |
-| **PRESETS** | The radio's level, 5% a step: fade it out and the keys play on alone. Home always plays it at full. |
+| **PRESETS** | The radio's level, 5% a step: fade it out and the keys play on alone. It's the same on every page, and kept. |
 | Hold **HOME** | The sampler's controls, on the screen. |
 | **HOME** or **ARP** | Back to the radio (the keys are the effects again). |
 

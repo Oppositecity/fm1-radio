@@ -354,8 +354,13 @@ static void ui_home(void)
     else if (!radio_want)
         w_cpy(line, "stopped", sizeof line);
     else if (radio_st == RS_PLAYING)
-        snprintf(line, sizeof line, "playing  %u kbit/s %s", radio_kbps,
-                 dec_kind == 2 ? (dec_sbr ? "AAC+" : "AAC") : "MP3");
+    {
+        int o = snprintf(line, sizeof line, "playing  %u kbit/s %s", radio_kbps,
+                         dec_kind == 2 ? (dec_sbr ? "AAC+" : "AAC") : "MP3");
+        if (smp_radio < SMP_RADIO_STEPS)          /* PRESETS turned down */
+            snprintf(line + o, sizeof line - (unsigned)o, "  %u%%",
+                     (unsigned)(smp_radio * 100u / SMP_RADIO_STEPS));
+    }
     else if (radio_st == RS_BUFFERING)
         snprintf(line, sizeof line, "buffering %u%%", (radio_wr - radio_rd) * 100u / NET_RING);
     else if (radio_st == RS_ERROR && radio_unplayable)
@@ -530,7 +535,7 @@ static int br_up(void)
 static void ui_help(void)
 {
     static const char *const L[2][9][2] = {{
-        {"KNOB 1..4", "continent .. station"}, {"SELECT", "next station"}, {"SEL", "browse the world"},
+        {"KNOB 1..4", "continent .. station"}, {"PRESETS", "radio level"}, {"SEL", "browse the world"},
         {"PLAY  SAVE", "play/stop, favorites"}, {"ARP", "sampler on the keys"}, {"GLO", "WiFi, networks"},
         {"keys / FX", "hold for FX / tap tempo"}, {"LFO EDIT SEQ", "echo, sweep, pump"},
         {"ENV", "latch held FX / let go"}}, {

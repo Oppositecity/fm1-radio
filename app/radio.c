@@ -487,7 +487,7 @@ static struct {
     uint32_t src, start;                          /* the source playing (FX_N: none), where its window starts */
     float pos, speed;                             /* read position in the history (samples), its rate */
     float lp[2][2], hp[2][2], bp[2][2], swp[2][2];   /* the filters' states: [channel][low, band] */
-    float gate, ring_c, ring_s;                   /* the chop / mute gain; the ring oscillator */
+    float gate, ring_c, ring_s, env;              /* the chops' gain; the ring oscillator; crush's peak follower */
     uint32_t crush_n, chop_n, len, held_was;      /* len: the stutter's loop, history samples */
     float crush_l, crush_r;
     uint32_t rng, src_n, cw, flip, sw;            /* the glitches': noise, a source's age (output samples), the comb's
@@ -534,6 +534,20 @@ static float fx_hist_at(float p)                  /* the history at position p (
     t = p - (float)i;
     a = mu_dec(fx_hist[i % FX_HIST]);
     return a + (mu_dec(fx_hist[(i + 1u) % FX_HIST]) - a) * t;
+}
+
+/* bitflip on one sample: the mask's bits flipped in its magnitude, only below its own top bit, so it stays between
+ * half and twice what it was: a crackle on the sound at its level (the fork; flipping fixed high bits of the int16
+ * made a loud square wave of a quiet sound's sign) */
+static float fx_flip(float x)
+{
+    int32_t v = (int32_t)(x * 32767.0f), a = v < 0 ? -v : v, m = a;
+    m |= m >> 1;
+    m |= m >> 2;
+    m |= m >> 4;
+    m |= m >> 8;
+    a ^= (int32_t)fx.flip & (m >> 1);
+    return (float)(v < 0 ? -a : a) * (0.8f / 32768.0f);
 }
 
 /* one stereo sample through the held effects (x: -1..1) */
@@ -671,13 +685,17 @@ static void fx_process(float *l, float *r)
         m = m > 0.8f ? 0.8f : m < -0.8f ? -0.8f : m;
         *l = *r = m;
     }
-    if (held & (1u << FX_CRUSH | 1u << FX_LOFI)) {   /* sample-and-hold, then fewer levels */
+    if (held & (1u << FX_CRUSH | 1u << FX_LOFI)) {   /* sample-and-hold, then fewer levels, rounded, of the sound's
+                                                   * own level (a peak follower, ~100 ms): as crunchy quiet as loud
+                                                   * (the fork; full-scale steps, truncated, silenced all but peaks) */
         uint32_t hold = held >> FX_CRUSH & 1u ? 6u : 2u;
-        float lv = held >> FX_CRUSH & 1u ? 12.0f : 48.0f;
+        float lv = held >> FX_CRUSH & 1u ? 6.0f : 24.0f;
+        fx.env = fm_maxf(fm_maxf(fm_fabsf(*l), fm_fabsf(*r)), fx.env * 0.9998f);
         if (++fx.crush_n >= hold) {
+            float s = lv / fm_maxf(fx.env, 0.001f);
             fx.crush_n = 0;
-            fx.crush_l = (float)(int32_t)(*l * lv) / lv;
-            fx.crush_r = (float)(int32_t)(*r * lv) / lv;
+            fx.crush_l = fm_floorf(*l * s + 0.5f) / s;
+            fx.crush_r = fm_floorf(*r * s + 0.5f) / s;
         }
         *l = fx.crush_l;
         *r = fx.crush_r;
@@ -689,11 +707,11 @@ static void fx_process(float *l, float *r)
         *l *= fx.ring_s;
         *r *= fx.ring_s;
     }
-    if (held >> FX_FLIP & 1u) {                   /* bitflip: bursts of high bits flipped, a new mask each 1/16 */
+    if (held >> FX_FLIP & 1u) {                   /* bitflip: bursts of bits flipped, a new mask each 1/16 */
         if (fx.chop_n % s16 == 0u)
-            fx.flip = fx_rand() & 1u ? (fx_rand() & 0x1F00u) | 0x0400u : 0u;
-        *l = (float)((int16_t)(int32_t)(*l * 32767.0f) ^ (int16_t)fx.flip) * (0.6f / 32768.0f);
-        *r = (float)((int16_t)(int32_t)(*r * 32767.0f) ^ (int16_t)fx.flip) * (0.6f / 32768.0f);
+            fx.flip = fx_rand() & 1u ? fx_rand() & fx_rand() & 0x7FFFu : 0u;
+        *l = fx_flip(*l);
+        *r = fx_flip(*r);
     }
     if (held >> FX_FOLD & 1u) {                   /* fold: x3, folded back into -1..1 (a triangle of x), at -9 dB */
         float t = (*l * 3.0f + 1.0f) * 0.25f;

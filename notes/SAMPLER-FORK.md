@@ -92,7 +92,7 @@ Black keys are bits 16..26 of `fx_held`. Sources (one at a time, the lowest held
 | C#4 | **rise**: 1/16 stutter, each repeat a step higher | source |
 | D#4 | **warble**: tape wow and flutter (a moving delay) | live source |
 | F#4 | **glitch**: tiny random loops (5-40 ms), new each 1/16 | source |
-| G#4 | **bitflip**: bursts of flipped bits in the 16-bit sample | post |
+| G#4 | **bitflip**: bursts of flipped bits in each sample's magnitude, only below its own top bit (stays within half to twice its level: a crackle, not a buzz; the first version flipped fixed high bits and made a loud square wave of a quiet sound) | post |
 | A#4 | **fold**: wavefolder | post |
 | C#5 | **comb**: a resonator at D3, the radio as a string | post (1 KB) |
 | D#5 | **shortwave**: multipath (the radio plus itself 0.2-4.5 ms later, drifting: sweeping notches) and ionospheric fading; only the radio, nothing synthesized | post (512 B) |
@@ -107,6 +107,7 @@ Also on Home (FX bits 27..29, held buttons; key 15 changed):
 | **LFO** | **echo**: the history 1/8 and 1/4 note back (halved while longer than the history) | post |
 | **EDIT** | **sweep**: a resonant low-pass, 210 Hz to ~5 kHz and back every 2 beats, from the press | post |
 | **SEQ** | **pump**: ducked to 0.15 on each beat, back by the next (cubic), from the press | post (gain) |
+| white 4, 16 | **crush**, **lo-fi** (upstream's): now quantized relative to a ~100 ms peak follower and rounded; upstream's full-scale steps, truncated toward zero, silenced everything below -22 dBFS (most of a broadcast between peaks, and more with PRESETS down) | post |
 | **ENV** | **latch**: what is held when pressed stays on (on every page) until ENV again | - |
 
 ## 4. If it doesn't fit (the order to cut)

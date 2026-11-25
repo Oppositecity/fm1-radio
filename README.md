@@ -180,7 +180,7 @@ slots holds a sound caught from the radio. **C4** plays it as it was caught, and
 | **LFO** | Arpeggio on or off: the held keys in turn, low to high, a 1/16 each at the tap tempo. |
 | **SEQ** | Dry (over the effects), resample (your playing goes into the history too, so **FX** grabs it with the radio), or thru FX (through the Home effects: latch some with **ENV** first). |
 | **PLAY** | The radio: play or stop. |
-| **PRESETS** | The radio's level, 5% a step: fade it out and the keys play on alone. It's the same on every page, and kept. |
+| **PRESETS** | The radio's level, 5% a step: fade it out and the keys play on alone. It's the same on every page, and kept. **FX** and **REC** still take the radio at full level; to sample only your keys (resample), stop the radio with **PLAY**. |
 | **ALGORITHM** | The keys' level, the same way: shown in the title (KEYS 70%) when below 100%. |
 | Hold **HOME** | The sampler's controls, on the screen. |
 | **HOME** or **ARP** | Back to the radio (the keys are the effects again). |
@@ -191,6 +191,9 @@ with what it does or its mode under it, lit when on.
 The slots are kept in the FM-1's flash (8-bit, 11 kHz): slots 1 to 3 hold about 2.6 s each, slot 4 about 1.5 s.
 REC first clears the slot, a moment of silence, then records. Another firmware that uses the same flash (LOOM-8's
 samples, for one) erases them. The settings are kept a few seconds after a change.
+
+The output goes through a limiter: however much is playing at once (the radio, the keys, echo), it never goes past
+-1 dBFS, so the FM-1's speaker and your headphones never get a clipped signal.
 
 ### Recording over USB
 

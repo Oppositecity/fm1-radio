@@ -49,7 +49,7 @@ shorter).
 | **HOME** (hold) | the sampler's controls page; letting go comes back here |
 | **HOME** (tap, on letting go) / **ARP** | back |
 
-| **PRESETS** | the radio's level, 0-100% in 5% steps (squared, ~45 ms smoothing), before the effects and the history (GRAB takes what was heard); on every page (Home shows it after the bit rate when below 100%), kept in OBJ_RADIO's spare byte (`rset.rdown`, steps below full: older saves load at 100%) 5 s after a change |
+| **PRESETS** | the radio's level, 0-100% in 5% steps (squared, ~45 ms smoothing), after the effects and the history (GRAB and REC take the radio whole; the effects work on it whole), but before them in THRU FX (the mix goes through); on every page (Home shows it after the bit rate when below 100%), kept in OBJ_RADIO's spare byte (`rset.rdown`, steps below full: older saves load at 100%) 5 s after a change |
 | **ALGORITHM** | the keys' level, the same way (after the sampler's soft limit, before the route): on every page, shown in the title when below 100%, kept in OBJ_RADIO's `playing` byte above bit 0 (steps below full; older saves: 0, full) |
 
 The modes live in `smp_set_t.fl` (the struct's spare byte, so the saved settings keep their layout). The piano
@@ -122,7 +122,9 @@ FONT_XS is already gone (section 1's table). The device build is the only measur
 
 - App-level only: nothing in base/ (boot, loader, install, supplies) changes.
 - Writes go only to XDATA0/XDATA1, through `plat_data_*`, which refuses anything outside the windows.
-- Output stays clamped to full scale (as upstream).
+- The output goes through a limiter (the fork): nothing past -1 dBFS however much is stacked (radio + keys,
+  echo, sweep's resonance, now Q ~1.7), down at once and back over ~0.5 s. Upstream clamped at full scale, which
+  clipped hard when the radio and the keys added up.
 - Never `--force`. Keep the stock firmware and radio-1.3.1 `.fwsc` on disk.
 
 ## Open, for the device

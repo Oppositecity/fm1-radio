@@ -482,6 +482,7 @@ static volatile float radio_lv_t = 1.0f;          /* the radio's level (PRESETS)
 static float radio_lv = 1.0f;
 static volatile float smp_lv_t = 1.0f;            /* the keys' level (ALGORITHM), and as it is */
 static float smp_lv = 1.0f;
+static float out_g = 1.0f;                       /* the output limiter's gain */
 static struct {
     uint32_t hw, half;                            /* history write index, the half-rate phase */
     uint32_t src, start;                          /* the source playing (FX_N: none), where its window starts */
@@ -669,8 +670,8 @@ static void fx_process(float *l, float *r)
                                                    * from the press */
         float u = 0.5f + 0.5f * fx_sin((float)(fx.chop_n % (2u * fx_beat)) / (float)(2u * fx_beat)), f;
         f = 0.03f + 0.62f * u * u;
-        *l = fx_svf(fx.swp[0], *l, f, 0.35f, 0);
-        *r = fx_svf(fx.swp[1], *r, f, 0.35f, 0);
+        *l = fx_svf(fx.swp[0], *l, f, 0.6f, 0);   /* (Q ~1.7: +4.5 dB at the cutoff) */
+        *r = fx_svf(fx.swp[1], *r, f, 0.6f, 0);
     }
     if (held >> FX_LP & 1u) {                     /* 500 Hz */
         *l = fx_svf(fx.lp[0], *l, 0.0712f, 0.5f, 0);
@@ -905,26 +906,34 @@ static void radio_render(int32_t *o, uint32_t n)
         } else if (playing) {
             radio_underruns++;
         }
-        radio_lv += (radio_lv_t - radio_lv) * 0.0005f;   /* the radio's level, moving in ~45 ms: before the
-                                                   * effects and the history, so GRAB takes what was heard */
-        l *= radio_lv;
-        rr *= radio_lv;
+        radio_lv += (radio_lv_t - radio_lv) * 0.0005f;   /* the radio's level, moving in ~45 ms */
         {   /* the sampler (app/sampler.c): over the effects (DRY), into the history too (RESAMPLE), or through the
-             * effects (THRU FX); the sum held to full scale */
-            float sy;
+             * effects (THRU FX). The radio's level comes after the effects and the history (GRAB and REC take the
+             * radio whole, and the effects work on it whole), but before them through FX (the mix goes in) */
+            float sy, pk;
             uint32_t route = SMP_ROUTE(smp);
             smp_lv += (smp_lv_t - smp_lv) * 0.0005f;
             sy = smp_next() * smp_lv;
             fx_rs = route == 1u ? sy : 0.0f;
             if (route == 2u) {
-                l += sy;
-                rr += sy;
+                l = l * radio_lv + sy;
+                rr = rr * radio_lv + sy;
                 sy = 0.0f;
             }
             if (playing || route)
                 fx_process(&l, &rr);
-            l = fm_clampf(l + sy, -1.0f, 1.0f);
-            rr = fm_clampf(rr + sy, -1.0f, 1.0f);
+            if (route != 2u) {
+                l = l * radio_lv + sy;
+                rr = rr * radio_lv + sy;
+            }
+            /* the limiter (the fork): nothing past -1 dBFS, however much is stacked (radio + keys, echo, resonance);
+             * down at once, back up over ~0.5 s. Upstream's clamp clipped hard at full scale */
+            pk = fm_maxf(fm_fabsf(l), fm_fabsf(rr));
+            if (pk * out_g > 0.89f)
+                out_g = 0.89f / pk;
+            l *= out_g;
+            rr *= out_g;
+            out_g += (1.0f - out_g) * 0.00005f;
         }
         o[2u * i] = (int32_t)(l * gain);
         o[2u * i + 1u] = (int32_t)(rr * gain);

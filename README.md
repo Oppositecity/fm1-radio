@@ -178,10 +178,12 @@ slots holds a sound caught from the radio. **C4** plays it as it was caught, and
 | **LFO** | Arpeggio on or off: the held keys in turn, low to high, a 1/16 each at the tap tempo. |
 | **SEQ** | Dry (over the effects), resample (your playing goes into the history too, so **FX** grabs it with the radio), or thru FX (through the Home effects: latch some with **ENV** first). |
 | **PLAY** | The radio: play or stop. |
+| **PRESETS** | The radio's level, 5% a step: fade it out and the keys play on alone. Home always plays it at full. |
 | Hold **HOME** | The sampler's controls, on the screen. |
 | **HOME** or **ARP** | Back to the radio (the keys are the effects again). |
 
-The bottom row shows the modes: LOOP, REV, POLY / CHORD / GLIDE, ARP and DRY / RESAMPLE / THRU FX, lit when on.
+The bottom of the screen shows the buttons as the FM-1 has them (FX SEL ENV LFO EDIT, then HOME SEQ PLAY REC), each
+with what it does or its mode under it, lit when on.
 
 The slots are kept in the FM-1's flash (8-bit, 11 kHz): slots 1 to 3 hold about 2.6 s each, slot 4 about 1.5 s.
 REC first clears the slot, a moment of silence, then records. Another firmware that uses the same flash (LOOM-8's

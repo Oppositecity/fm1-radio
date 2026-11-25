@@ -49,8 +49,11 @@ shorter).
 | **HOME** (hold) | the sampler's controls page; letting go comes back here |
 | **HOME** (tap, on letting go) / **ARP** | back |
 
-The modes live in `smp_set_t.fl` (the struct's spare byte, so the saved settings keep their layout) and show on the
-bottom row: LOOP, REV, POLY/CHORD/GLIDE, ARP, DRY/RESAMPLE/THRU FX, teal when on.
+| **PRESETS** | the radio's level, 0-100% in 5% steps (squared, ~45 ms smoothing), before the effects and the history (GRAB takes what was heard); the sampler page only, not saved |
+
+The modes live in `smp_set_t.fl` (the struct's spare byte, so the saved settings keep their layout). The piano
+picture is gone from this page: its place and the hint row show the buttons as the FM-1 has them, two rows (FX SEL
+ENV LFO EDIT / HOME SEQ PLAY REC), each its name and under it what it does or its mode, teal when on.
 
 ### Slots: the "save"
 

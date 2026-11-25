@@ -478,6 +478,8 @@ static volatile uint32_t fx_held;
 static volatile uint32_t fx_beat = 22050u;        /* a beat in output samples (44.1 kHz): the tap tempo, 120 BPM */
 static volatile uint8_t fx_freeze;                /* GRAB copying the history: nothing written into it */
 static float fx_rs;                               /* the sampler, into the history too (its RESAMPLE route) */
+static volatile float radio_lv_t = 1.0f;          /* the radio's level (the sampler page's PRESETS), and as it is */
+static float radio_lv = 1.0f;
 static struct {
     uint32_t hw, half;                            /* history write index, the half-rate phase */
     uint32_t src, start;                          /* the source playing (FX_N: none), where its window starts */
@@ -883,6 +885,10 @@ static void radio_render(int32_t *o, uint32_t n)
         } else if (playing) {
             radio_underruns++;
         }
+        radio_lv += (radio_lv_t - radio_lv) * 0.0005f;   /* the radio's level, moving in ~45 ms: before the
+                                                   * effects and the history, so GRAB takes what was heard */
+        l *= radio_lv;
+        rr *= radio_lv;
         {   /* the sampler (app/sampler.c): over the effects (DRY), into the history too (RESAMPLE), or through the
              * effects (THRU FX); the sum held to full scale */
             float sy = smp_next();

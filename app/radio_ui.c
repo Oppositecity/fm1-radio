@@ -535,7 +535,7 @@ static void ui_help(void)
         {"keys / FX", "hold for FX / tap tempo"}, {"LFO EDIT SEQ", "echo, sweep, pump"},
         {"ENV", "latch held FX / let go"}}, {
         {"keys", "play it, C4 = as caught"}, {"FX", "grab the last 0.5 s"}, {"REC (hold)", "record from now"},
-        {"SELECT  OCT", "slot, octave"}, {"K1 K2", "start, length"}, {"K3 K4", "attack, release"},
+        {"SELECT  OCT", "slot, octave"}, {"K1..K4", "start, length, att, rel"}, {"PRESETS", "radio level (fade)"},
         {"SEL  EDIT", "loop, reverse"}, {"ENV  LFO", "poly/chord/glide, arp"}, {"SEQ", "dry / resample / thru FX"}}};
     int i;
     ui_title(0, help_from_smp ? "Sampler controls" : "Controls", "");

@@ -431,6 +431,9 @@ static int8_t syn_key_note[NKEYS];                /* the note each held key star
 static uint8_t syn_changed;                       /* settings changed, not saved yet: saved 5 s after the last
                                                    * change, or on leaving */
 static uint32_t syn_changed_t;
+#define SMP_RADIO_STEPS 20u
+static uint8_t smp_radio = SMP_RADIO_STEPS;       /* PRESETS on the sampler page: the radio's level, 5% a detent
+                                                   * (the keys stay as they are; Home always has it all) */
 static int arp_k = -1, arp_note = -1;             /* ARP: the key last played (-1: none yet), its note sounding */
 static uint32_t arp_t;                            /* its step's start (ms) */
 
@@ -488,43 +491,58 @@ static void ui_smp_wave(int slot, uint32_t y)     /* the slot's sound, the windo
     cv_blit(0, y);
 }
 
-static void ui_smp_modes(int slot, uint32_t y)   /* the page's modes, each lit when on (HOME held: which button) */
+/* a row of the page's buttons as the FM-1 has them, left to right: each its name, and under it what it does or its
+ * mode (teal when on), spread across the screen */
+static void ui_smp_legend(int slot, uint32_t y, int n, const char *const *lab, const char *const *val, uint32_t on)
 {
-    static const char *const MODE[3] = {"POLY", "CHORD", "GLIDE"}, *const ROUTE[3] = {"DRY", "RESAMPLE", "THRU FX"};
-    const char *w[5];
-    uint32_t on = smp.loop | SMP_REV(smp) << 1 | (SMP_MODE(smp) != 0u) << 2 | SMP_ARP(smp) << 3 |
-                  (SMP_ROUTE(smp) != 0u) << 4, i;
     char key[UI_KEY];
-    int32_t x = 16;
-    w[0] = "LOOP", w[1] = "REV", w[2] = MODE[SMP_MODE(smp) % 3u], w[3] = "ARP", w[4] = ROUTE[SMP_ROUTE(smp) % 3u];
-    snprintf(key, sizeof key, "M%x%x", (unsigned)on, smp.fl);
+    int32_t w[5], sum = 0, x = 8, gap;
+    int i, o = snprintf(key, sizeof key, "L%x", (unsigned)on);
+    for (i = 0; i < n && o < UI_KEY - 1; i++)
+        o += snprintf(key + o, sizeof key - (unsigned)o, "|%s", val[i]);
     if (w_eq(ui_key[slot], key))
         return;
     memcpy(ui_key[slot], key, sizeof key);
-    cv_begin(240, 26, K_PANEL);
-    for (i = 0; i < 5u; i++) {
-        cv_text(x, (26 - (int32_t)FONT_S.h) / 2, &FONT_S, w[i], on >> i & 1u ? K_TEAL : K_DIM);
-        x += text_w(&FONT_S, w[i]) + 12;
+    for (i = 0; i < n; i++) {
+        int32_t a = text_w(&FONT_S, lab[i]), b = text_w(&FONT_S, val[i]);
+        sum += w[i] = a > b ? a : b;
+    }
+    gap = (224 - sum) / (n - 1);
+    cv_begin(240, 38, K_PANEL);
+    for (i = 0; i < n; i++) {
+        cv_text(x, 2, &FONT_S, lab[i], K_DIM);
+        cv_text(x, 19, &FONT_S, val[i], on >> i & 1u ? K_TEAL : K_TEXT);
+        x += w[i] + gap;
     }
     cv_blit(0, y);
 }
 
 static void ui_synth(void)
 {
-    char a[24], b[24], c[24], d[24], o[24];
+    static const char *const MODE[3] = {"poly", "chord", "glide"}, *const ROUTE[3] = {"dry", "resample", "thru fx"};
+    static const char *const L1[5] = {"FX", "SEL", "ENV", "LFO", "EDIT"}, *const L2[4] = {"HOME", "SEQ", "PLAY", "REC"};
+    const char *v1[5], *v2[4];
+    char a[24], b[24], c[24], d[24], o[24], rl[16];
     snprintf(a, sizeof a, "%u%%", (unsigned)(smp.start * 100u / 128u));
     smp_secs(b, sizeof b, (uint32_t)(smp_b - smp_a));
     snprintf(c, sizeof c, "%u ms", (unsigned)smp_attack_ms());
     snprintf(d, sizeof d, "%u ms", (unsigned)smp_release_ms());
     snprintf(o, sizeof o, "SLOT %u  OCT %+d", smp.slot + 1u, smp.octave);
+    if (smp_radio >= SMP_RADIO_STEPS)
+        w_cpy(rl, "radio", sizeof rl);
+    else
+        snprintf(rl, sizeof rl, "radio %u%%", (unsigned)(smp_radio * 100u / SMP_RADIO_STEPS));
     ui_title(0, "Sampler", o);
     ui_cell(1, 8, 42, "K1", "START", a, 0);
     ui_cell(2, 120, 42, "K2", "LENGTH", b, 0);
     ui_cell(3, 8, 88, "K3", "ATTACK", c, 0);
     ui_cell(4, 120, 88, "K4", "RELEASE", d, 0);
     ui_smp_wave(5, 136);
-    ui_piano(6, 164, -1, syn_keys);
-    ui_smp_modes(13, 214);
+    v1[0] = "grab", v1[1] = "loop", v1[2] = MODE[SMP_MODE(smp) % 3u], v1[3] = "arp", v1[4] = "rev";
+    ui_smp_legend(6, 164, 5, L1, v1, smp.loop << 1 | (SMP_MODE(smp) != 0u) << 2 | SMP_ARP(smp) << 3 |
+                  SMP_REV(smp) << 4);
+    v2[0] = "help", v2[1] = ROUTE[SMP_ROUTE(smp) % 3u], v2[2] = rl, v2[3] = rec_on ? "REC" : "hold";
+    ui_smp_legend(13, 202, 4, L2, v2, (SMP_ROUTE(smp) != 0u) << 1 | (radio_st == RS_PLAYING) << 2 | rec_on << 3);
 }
 
 static int syn_knob(uint8_t *v, int32_t d)       /* a knob's detents, 2 steps each, 0..127; changed? */
@@ -809,7 +827,7 @@ static uint32_t btn_prev;
 static void input(void)
 {
     uint32_t now = plat_buttons(), down = now & ~btn_prev, up = btn_prev & ~now;
-    int32_t turn = plat_enc(EN_SELECT);
+    int32_t turn = plat_enc(EN_SELECT), preset = plat_enc(EN_PRESET);   /* (read everywhere: no jump later) */
     btn_prev = now;
     {   /* GLO: WiFi, from anywhere; HOME held: the controls (the sampler's, from its page), back on letting go */
         static uint32_t home_t;
@@ -996,6 +1014,10 @@ static void input(void)
             syn_keys = 0;                         /* the held keys start again (as notes, or the arpeggio) */
             ch = 1;
         }
+        if (preset) {                             /* PRESETS: the radio's level */
+            int32_t v = (int32_t)smp_radio + preset;
+            smp_radio = (uint8_t)(v < 0 ? 0 : v > (int32_t)SMP_RADIO_STEPS ? SMP_RADIO_STEPS : v);
+        }
         if (down & (1u << B_EDIT))
             smp.fl ^= 1u, ch = 1;
         if (down & (1u << B_SEQ))                 /* dry, resample, through FX */
@@ -1159,6 +1181,10 @@ void app_frame(void)
 {
     static uint32_t last_draw;
     input();
+    {   /* the radio's level: the sampler page's PRESETS (squared: a fader), all of it elsewhere */
+        float lv = (float)smp_radio * (1.0f / (float)SMP_RADIO_STEPS);
+        radio_lv_t = ui_page == PG_SYNTH || (ui_page == PG_HELP && help_from_smp) ? lv * lv : 1.0f;
+    }
     wire_actions();
     scan_refresh();
     if (join_due && wifi_st >= WS_IDLE && wifi_st != WS_STARTING) {   /* a join asked while WiFi started */

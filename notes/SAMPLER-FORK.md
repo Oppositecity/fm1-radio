@@ -50,6 +50,7 @@ shorter).
 | **HOME** (tap, on letting go) / **ARP** | back |
 
 | **PRESETS** | the radio's level, 0-100% in 5% steps (squared, ~45 ms smoothing), before the effects and the history (GRAB takes what was heard); on every page (Home shows it after the bit rate when below 100%), kept in OBJ_RADIO's spare byte (`rset.rdown`, steps below full: older saves load at 100%) 5 s after a change |
+| **ALGORITHM** | the keys' level, the same way (after the sampler's soft limit, before the route): on every page, shown in the title when below 100%, kept in OBJ_RADIO's `playing` byte above bit 0 (steps below full; older saves: 0, full) |
 
 The modes live in `smp_set_t.fl` (the struct's spare byte, so the saved settings keep their layout). The piano
 picture is gone from this page: its place and the hint row show the buttons as the FM-1 has them, two rows (FX SEL

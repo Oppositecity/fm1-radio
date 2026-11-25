@@ -109,9 +109,9 @@ static void sel_turn(int level, int32_t d)
 /* kept in the app's own object (OBJ_RADIO: app.c rset) */
 static void radio_remember(void)
 {
-    if (rset.playing != radio_want || rset.country != sel_country || !w_eq(rset.place, place_name) ||
+    if ((rset.playing & 1u) != radio_want || rset.country != sel_country || !w_eq(rset.place, place_name) ||
         !w_eq(rset.st_id, st_id)) {
-        rset.playing = radio_want;
+        rset.playing = (uint8_t)((rset.playing & ~1u) | (radio_want ? 1u : 0u));   /* (the keys' level above) */
         rset.country = sel_country;
         w_cpy(rset.place, place_name, sizeof rset.place);
         w_cpy(rset.st_id, st_id, sizeof rset.st_id);
@@ -266,7 +266,7 @@ static void radio_ui_restore(void)
     p = rset.place[0] ? rg_place_index(sel_country, rset.place) : -1;
     sel_place = p >= 0 ? (uint16_t)p : 0;
     place_load();
-    radio_want = rset.playing;
+    radio_want = rset.playing & 1u;
     if (p >= 0 && rset.st_id[0]) {                /* the station itself: it plays before the list is fetched */
         w_cpy(st_id, rset.st_id, sizeof st_id);
         w_cpy(st_title, rset.st_title, sizeof st_title);
@@ -540,7 +540,8 @@ static void ui_help(void)
         {"keys / FX", "hold for FX / tap tempo"}, {"LFO EDIT SEQ", "echo, sweep, pump"},
         {"ENV", "latch held FX / let go"}}, {
         {"keys", "play it, C4 = as caught"}, {"FX", "grab the last 0.5 s"}, {"REC (hold)", "record from now"},
-        {"SELECT  OCT", "slot, octave"}, {"K1..K4", "start, length, att, rel"}, {"PRESETS", "radio level (fade)"},
+        {"SELECT  OCT", "slot, octave"}, {"K1..K4", "start, length, att, rel"},
+        {"PRESETS  ALGO", "radio, keys level"},
         {"SEL  EDIT", "loop, reverse"}, {"ENV  LFO", "poly/chord/glide, arp"}, {"SEQ", "dry / resample / thru FX"}}};
     int i;
     ui_title(0, help_from_smp ? "Sampler controls" : "Controls", "");

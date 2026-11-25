@@ -62,7 +62,9 @@ static const char *wifi_status_str(void)
 #define RSET_MAGIC 0x52414431u                    /* "RAD1" */
 static struct {
     uint32_t magic;
-    uint8_t playing, rdown;                       /* rdown (was spare, 0): the radio's level, PRESETS steps below full */
+    uint8_t playing, rdown;                       /* playing: bit 0 (upstream's 0/1), and above it the keys' level,
+                                                   * ALGORITHM steps below full; rdown (was spare, 0): the radio's
+                                                   * level, PRESETS steps below full (older saves: both full) */
     uint16_t country;
     char place[32], st_id[12], st_title[32];
     smp_set_t smp;
@@ -154,6 +156,8 @@ static uint8_t help_from_smp;                     /* the controls page shows the
 #define SMP_RADIO_STEPS 20u
 static uint8_t smp_radio = SMP_RADIO_STEPS;       /* PRESETS, on every page: the radio's level, 5% a detent (the
                                                    * keys stay as they are); kept in rset.rdown */
+static uint8_t smp_keys = SMP_RADIO_STEPS;        /* ALGORITHM: the keys' level, the same way; kept in rset.playing's
+                                                   * upper bits (a mixer: PRESETS the radio, ALGORITHM the keys) */
 static volatile uint8_t url_restart;
 static uint32_t main_loops;
 
@@ -527,7 +531,11 @@ static void ui_synth(void)
     smp_secs(b, sizeof b, (uint32_t)(smp_b - smp_a));
     snprintf(c, sizeof c, "%u ms", (unsigned)smp_attack_ms());
     snprintf(d, sizeof d, "%u ms", (unsigned)smp_release_ms());
-    snprintf(o, sizeof o, "SLOT %u  OCT %+d", smp.slot + 1u, smp.octave);
+    if (smp_keys < SMP_RADIO_STEPS)               /* ALGORITHM turned down: the keys' level too, closer */
+        snprintf(o, sizeof o, "SLOT %u OCT %+d KEYS %u%%", smp.slot + 1u, smp.octave,
+                 (unsigned)(smp_keys * 100u / SMP_RADIO_STEPS));
+    else
+        snprintf(o, sizeof o, "SLOT %u  OCT %+d", smp.slot + 1u, smp.octave);
     if (smp_radio >= SMP_RADIO_STEPS)
         w_cpy(rl, "radio", sizeof rl);
     else
@@ -797,6 +805,7 @@ void app_init(void)
     fx_reset();
     rset_load();
     smp_radio = (uint8_t)(rset.rdown < SMP_RADIO_STEPS ? SMP_RADIO_STEPS - rset.rdown : 0u);
+    smp_keys = (uint8_t)((rset.playing >> 1) < SMP_RADIO_STEPS ? SMP_RADIO_STEPS - (rset.playing >> 1) : 0u);
 }
 
 void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
@@ -828,13 +837,15 @@ static uint32_t btn_prev;
 static void input(void)
 {
     uint32_t now = plat_buttons(), down = now & ~btn_prev, up = btn_prev & ~now;
-    int32_t turn = plat_enc(EN_SELECT), preset = plat_enc(EN_PRESET);
-    static uint32_t lv_t;                         /* the radio's level changed (ms), kept 5 s after; 0: kept */
+    int32_t turn = plat_enc(EN_SELECT), preset = plat_enc(EN_PRESET), algo = plat_enc(EN_ALGO);
+    static uint32_t lv_t;                         /* a level changed (ms), kept 5 s after; 0: kept */
     btn_prev = now;
-    if (preset) {                                 /* PRESETS, on every page: the radio's level (the keys stay) */
-        int32_t v = (int32_t)smp_radio + preset;
+    if (preset || algo) {                         /* on every page: PRESETS the radio's level, ALGORITHM the keys' */
+        int32_t v = (int32_t)smp_radio + preset, k = (int32_t)smp_keys + algo;
         smp_radio = (uint8_t)(v < 0 ? 0 : v > (int32_t)SMP_RADIO_STEPS ? SMP_RADIO_STEPS : v);
+        smp_keys = (uint8_t)(k < 0 ? 0 : k > (int32_t)SMP_RADIO_STEPS ? SMP_RADIO_STEPS : k);
         rset.rdown = (uint8_t)(SMP_RADIO_STEPS - smp_radio);
+        rset.playing = (uint8_t)((rset.playing & 1u) | (SMP_RADIO_STEPS - smp_keys) << 1);
         lv_t = plat_ms() | 1u;
         ui_dirty = 1;
     } else if (lv_t && plat_ms() - lv_t >= 5000u) {
@@ -1189,9 +1200,11 @@ void app_frame(void)
 {
     static uint32_t last_draw;
     input();
-    {   /* the radio's level: PRESETS, squared (a fader) */
+    {   /* the levels: PRESETS the radio's, ALGORITHM the keys', squared (faders) */
         float lv = (float)smp_radio * (1.0f / (float)SMP_RADIO_STEPS);
+        float kv = (float)smp_keys * (1.0f / (float)SMP_RADIO_STEPS);
         radio_lv_t = lv * lv;
+        smp_lv_t = kv * kv;
     }
     wire_actions();
     scan_refresh();

@@ -125,6 +125,7 @@ the strongest saved network it hears (hearing none, it tries each saved one in t
 | **KNOB 4** or **SELECT** | Station in the place. |
 | **MASTER** | Volume. |
 | **PRESETS** | The radio's level (the sampler's keys stay as they are): kept, and shown after the bit rate when below 100%. |
+| **ALGORITHM** | The sampler's keys' level: with PRESETS, a mixer (MASTER is the whole). Kept too. |
 | **FX** | Tap tempo for the effects. |
 | **SEL** | Browse the list of continents, countries, places and stations. |
 | **SAVE** | Favorites. |
@@ -180,6 +181,7 @@ slots holds a sound caught from the radio. **C4** plays it as it was caught, and
 | **SEQ** | Dry (over the effects), resample (your playing goes into the history too, so **FX** grabs it with the radio), or thru FX (through the Home effects: latch some with **ENV** first). |
 | **PLAY** | The radio: play or stop. |
 | **PRESETS** | The radio's level, 5% a step: fade it out and the keys play on alone. It's the same on every page, and kept. |
+| **ALGORITHM** | The keys' level, the same way: shown in the title (KEYS 70%) when below 100%. |
 | Hold **HOME** | The sampler's controls, on the screen. |
 | **HOME** or **ARP** | Back to the radio (the keys are the effects again). |
 

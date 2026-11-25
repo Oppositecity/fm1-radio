@@ -354,7 +354,8 @@ static void ui_home(void)
     else if (!radio_want)
         w_cpy(line, "stopped", sizeof line);
     else if (radio_st == RS_PLAYING)
-        snprintf(line, sizeof line, "playing  %u kbit/s", radio_kbps);
+        snprintf(line, sizeof line, "playing  %u kbit/s %s", radio_kbps,
+                 dec_kind == 2 ? (dec_sbr ? "AAC+" : "AAC") : "MP3");
     else if (radio_st == RS_BUFFERING)
         snprintf(line, sizeof line, "buffering %u%%", (radio_wr - radio_rd) * 100u / NET_RING);
     else if (radio_st == RS_ERROR && radio_unplayable)
@@ -367,11 +368,12 @@ static void ui_home(void)
         snprintf(line, sizeof line, "tempo %u BPM", (unsigned)tempo_bpm);
         ui_row(3, 96, 22, line, "", K_TEAL, K_DIM, K_BG);
     } else if (fx_held) {                         /* the held effects instead of the status */
-        uint32_t k, o = 0;
-        line[0] = 0;
+        uint32_t k, o = fx_latch ? 5u : 0u, o0 = o;
+        w_cpy(line, "ENV: ", sizeof line);        /* latched */
+        line[o] = 0;
         for (k = 0; k < FX_N && o + 2u < sizeof line; k++)
             if (fx_held >> k & 1u)
-                o += (uint32_t)snprintf(line + o, sizeof line - o, "%s%s", o ? " + " : "", FX_NAME[k]);
+                o += (uint32_t)snprintf(line + o, sizeof line - o, "%s%s", o > o0 ? " + " : "", FX_NAME[k]);
         ui_row(3, 96, 22, line, "", K_CORAL, K_DIM, K_BG);
     } else {
         ui_row(3, 96, 22, line, "", lc, K_DIM, K_BG);
@@ -527,14 +529,19 @@ static int br_up(void)
 /* ---- held HOME: the controls */
 static void ui_help(void)
 {
-    static const char *const L[9][2] = {
+    static const char *const L[2][9][2] = {{
         {"KNOB 1..4", "continent .. station"}, {"SELECT", "next station"}, {"SEL", "browse the world"},
-        {"PLAY", "play / stop"}, {"SAVE", "favorites"}, {"ARP", "sampler on the keys"}, {"GLO", "WiFi, networks"},
-        {"MASTER", "volume"}, {"keys / FX", "hold for FX / tap tempo"}};
+        {"PLAY  SAVE", "play/stop, favorites"}, {"ARP", "sampler on the keys"}, {"GLO", "WiFi, networks"},
+        {"keys / FX", "hold for FX / tap tempo"}, {"LFO EDIT SEQ", "echo, sweep, pump"},
+        {"ENV", "latch held FX / let go"}}, {
+        {"keys", "play it, C4 = as caught"}, {"FX", "grab the last 0.5 s"}, {"REC (hold)", "record from now"},
+        {"SELECT  OCT", "slot, octave"}, {"K1 K2", "start, length"}, {"K3 K4", "attack, release"},
+        {"SEL  EDIT", "loop, reverse"}, {"ENV  LFO", "poly/chord/glide, arp"}, {"SEQ", "dry / resample / thru FX"}}};
     int i;
-    ui_title(0, "Controls", "");
+    ui_title(0, help_from_smp ? "Sampler controls" : "Controls", "");
     for (i = 0; i < 9; i++)
-        ui_row(1 + i, 40 + 19u * (uint32_t)i, 19, L[i][0], L[i][1], K_TEXT, K_DIM, K_BG);
+        ui_row(1 + i, 40 + 19u * (uint32_t)i, 19, L[help_from_smp][i][0], L[help_from_smp][i][1], K_TEXT, K_DIM,
+               K_BG);
     ui_row(13, 214, 26, "let go of HOME", "", K_DIM, K_DIM, K_PANEL);
 }
 

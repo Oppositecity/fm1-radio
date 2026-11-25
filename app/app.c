@@ -149,6 +149,8 @@ static volatile uint8_t wire_cmd, wire_arg, wire_arg2;
 static const uint8_t WHITE_KEY[16] = PLAT_WHITE_KEYS;   /* F3 .. G5 */
 static const uint8_t BLACK_KEY[11] = PLAT_BLACK_KEYS;   /* the glitches (FX 16..26) */
 static uint32_t fx_wire;
+static uint32_t fx_latch;                         /* ENV on Home: the effects kept on after the keys are let go */
+static uint8_t help_from_smp;                     /* the controls page shows the sampler's, and goes back to it */
 static volatile uint8_t url_restart;
 static uint32_t main_loops;
 
@@ -429,6 +431,25 @@ static int8_t syn_key_note[NKEYS];                /* the note each held key star
 static uint8_t syn_changed;                       /* settings changed, not saved yet: saved 5 s after the last
                                                    * change, or on leaving */
 static uint32_t syn_changed_t;
+static int arp_k = -1, arp_note = -1;             /* ARP: the key last played (-1: none yet), its note sounding */
+static uint32_t arp_t;                            /* its step's start (ms) */
+
+static void syn_on(int note)                      /* a note, as the mode plays it: alone, a major triad, or glided to */
+{
+    if (SMP_MODE(smp) == 2u) {
+        smp_glide_to(note);
+    } else {
+        smp_note_on(note);
+        if (SMP_MODE(smp) == 1u)
+            smp_note_on(note + 4), smp_note_on(note + 7);
+    }
+}
+static void syn_off(int note)
+{
+    smp_note_off(note);
+    if (SMP_MODE(smp) == 1u)
+        smp_note_off(note + 4), smp_note_off(note + 7);
+}
 
 static void smp_secs(char *b, unsigned max, uint32_t n)   /* samples as seconds, "1.23 s" */
 {
@@ -438,18 +459,16 @@ static void smp_secs(char *b, unsigned max, uint32_t n)   /* samples as seconds,
 
 static void ui_smp_wave(int slot, uint32_t y)     /* the slot's sound, the window played lit, and its state */
 {
-    char key[UI_KEY], st[24];
+    char key[UI_KEY], st[28];
     uint32_t n = smp.n[smp.slot], i, c;
     const uint8_t *s = n ? plat_data(SMP_OFF[smp.slot]) : 0;
     if (rec_on) {
         st[0] = 'R', st[1] = 'E', st[2] = 'C', st[3] = ' ';
         smp_secs(st + 4, sizeof st - 4, rec_w - SMP_OFF[rec_slot]);
     } else if (!s) {
-        w_cpy(st, "empty: FX or REC", sizeof st);
+        w_cpy(st, "empty: FX grab, hold REC", sizeof st);
     } else {
         smp_secs(st, sizeof st, n);
-        if (smp.loop)
-            w_cpy(st + strlen(st), "  loop", 8);
     }
     snprintf(key, sizeof key, "%u|%u|%u|%u|%s", smp.slot, (unsigned)(n >> 8), smp.start, smp.len, st);
     if (w_eq(ui_key[slot], key))
@@ -469,6 +488,27 @@ static void ui_smp_wave(int slot, uint32_t y)     /* the slot's sound, the windo
     cv_blit(0, y);
 }
 
+static void ui_smp_modes(int slot, uint32_t y)   /* the page's modes, each lit when on (HOME held: which button) */
+{
+    static const char *const MODE[3] = {"POLY", "CHORD", "GLIDE"}, *const ROUTE[3] = {"DRY", "RESAMPLE", "THRU FX"};
+    const char *w[5];
+    uint32_t on = smp.loop | SMP_REV(smp) << 1 | (SMP_MODE(smp) != 0u) << 2 | SMP_ARP(smp) << 3 |
+                  (SMP_ROUTE(smp) != 0u) << 4, i;
+    char key[UI_KEY];
+    int32_t x = 16;
+    w[0] = "LOOP", w[1] = "REV", w[2] = MODE[SMP_MODE(smp) % 3u], w[3] = "ARP", w[4] = ROUTE[SMP_ROUTE(smp) % 3u];
+    snprintf(key, sizeof key, "M%x%x", (unsigned)on, smp.fl);
+    if (w_eq(ui_key[slot], key))
+        return;
+    memcpy(ui_key[slot], key, sizeof key);
+    cv_begin(240, 26, K_PANEL);
+    for (i = 0; i < 5u; i++) {
+        cv_text(x, (26 - (int32_t)FONT_S.h) / 2, &FONT_S, w[i], on >> i & 1u ? K_TEAL : K_DIM);
+        x += text_w(&FONT_S, w[i]) + 12;
+    }
+    cv_blit(0, y);
+}
+
 static void ui_synth(void)
 {
     char a[24], b[24], c[24], d[24], o[24];
@@ -484,7 +524,7 @@ static void ui_synth(void)
     ui_cell(4, 120, 88, "K4", "RELEASE", d, 0);
     ui_smp_wave(5, 136);
     ui_piano(6, 164, -1, syn_keys);
-    ui_row(13, 214, 26, "REC hold  FX grab  SEL loop", "HOME", K_DIM, K_DIM, K_PANEL);
+    ui_smp_modes(13, 214);
 }
 
 static int syn_knob(uint8_t *v, int32_t d)       /* a knob's detents, 2 steps each, 0..127; changed? */
@@ -517,6 +557,7 @@ static void synth_leave(void)                     /* back to Home: notes let go,
 {
     smp_all_off();
     syn_keys = 0;
+    arp_note = arp_k = -1;
     if (rec_on) {
         smp_rec_stop();
         smp_done();
@@ -646,7 +687,7 @@ static void wire_dump(void)
     wire_line(b);
     snprintf(b, sizeof b, "  under %u rebuf %u reconn %u aac bad %u %s%s", (unsigned)radio_underruns,
              (unsigned)radio_rebuffers, (unsigned)radio_reconnects, (unsigned)radio_aac_errs,
-             dec_kind == 2 ? "AAC " : dec_kind == 1 ? "MP3 " : "", radio_why);
+             dec_kind == 2 ? (dec_sbr ? "AAC+ " : "AAC ") : dec_kind == 1 ? "MP3 " : "", radio_why);
     wire_line(b);
     {   /* rates since the last dump: what came in, what was decoded, how often the main loop went round */
         static uint32_t t_last, wr_last, fr_last, loops_last;
@@ -767,24 +808,32 @@ void app_ui_init(void)
 static uint32_t btn_prev;
 static void input(void)
 {
-    uint32_t now = plat_buttons(), down = now & ~btn_prev;
+    uint32_t now = plat_buttons(), down = now & ~btn_prev, up = btn_prev & ~now;
     int32_t turn = plat_enc(EN_SELECT);
     btn_prev = now;
-    {   /* GLO: WiFi, from anywhere; HOME held: the controls */
+    {   /* GLO: WiFi, from anywhere; HOME held: the controls (the sampler's, from its page), back on letting go */
         static uint32_t home_t;
         if (down & (1u << B_GLO))
             ui_page_set(ui_page == PG_WIFI ? PG_HOME : PG_WIFI);
         if (now & (1u << B_HOME)) {
             if (down & (1u << B_HOME))
                 home_t = plat_ms();
-            else if (plat_ms() - home_t > 450u && ui_page != PG_HELP && ui_page != PG_PASS)
+            else if (plat_ms() - home_t > 450u && ui_page != PG_HELP && ui_page != PG_PASS) {
+                help_from_smp = ui_page == PG_SYNTH;
+                if (help_from_smp) {
+                    smp_all_off();                /* (the keys aren't read meanwhile) */
+                    syn_keys = 0;
+                }
                 ui_page_set(PG_HELP);
+            }
         } else if (ui_page == PG_HELP) {
-            ui_page_set(PG_HOME);
+            ui_page_set(help_from_smp ? PG_SYNTH : PG_HOME);
             down &= ~(1u << B_HOME);
+            up &= ~(1u << B_HOME);
         }
     }
-    {   /* the white keys, held on Home: the punch-in FX (a wire command's 0x47 holds one too) */
+    {   /* the keys (and LFO, EDIT, SEQ), held on Home: the punch-in FX (a wire command's 0x47 holds one too); ENV
+         * keeps what is held on (latched, on every page), or lets the latched go */
         uint32_t keys = ui_page == PG_HOME ? plat_keys() : 0u, h = 0;
         int w;
         for (w = 0; w < 16; w++)
@@ -793,7 +842,12 @@ static void input(void)
         for (w = 0; w < 11; w++)
             if (keys >> BLACK_KEY[w] & 1u)
                 h |= 1u << (16 + w);
-        fx_held = h | fx_wire;
+        if (ui_page == PG_HOME) {
+            h |= (now >> B_LFO & 1u) << FX_ECHO | (now >> B_EDIT & 1u) << FX_SWEEP | (now >> B_SEQ & 1u) << FX_PUMP;
+            if (down & (1u << B_ENV))
+                fx_latch = fx_latch ? 0u : h;
+        }
+        fx_held = h | fx_wire | fx_latch;
     }
     if (ui_page == PG_HOME) {
         if (down & (1u << B_FX))
@@ -894,14 +948,58 @@ static void input(void)
         uint32_t keys = plat_keys(), on = keys & ~syn_keys, off = syn_keys & ~keys;
         int k, ch = 0;
         syn_keys = keys;
-        for (k = 0; k < NKEYS; k++) {
-            if (off >> k & 1u)
-                smp_note_off(syn_key_note[k]);
-            if (on >> k & 1u) {
-                syn_key_note[k] = (int8_t)(53 + k + 12 * smp.octave);   /* F3 = MIDI 53; C4 plays it as recorded */
-                smp_note_on(syn_key_note[k]);
+        if (SMP_ARP(smp)) {                       /* ARP: the held keys in turn, low to high, a 1/16 each */
+            uint32_t t = plat_ms(), step = 15000u / tempo_bpm;
+            if (!keys) {
+                if (arp_note >= 0)
+                    syn_off(arp_note);
+                arp_note = -1;
+                arp_k = -1;
+            } else if (arp_k < 0 || t - arp_t >= step) {
+                for (k = 1; k <= NKEYS; k++)      /* the next held key up, round to the lowest */
+                    if (keys >> ((arp_k + k + NKEYS) % NKEYS) & 1u)
+                        break;
+                arp_k = (arp_k + k + NKEYS) % NKEYS;
+                if (arp_note >= 0 && SMP_MODE(smp) != 2u)
+                    syn_off(arp_note);
+                arp_note = 53 + arp_k + 12 * smp.octave;
+                syn_on(arp_note);
+                arp_t = arp_k >= 0 && t - arp_t < 2u * step ? arp_t + step : t;
+            } else if (arp_note >= 0 && SMP_MODE(smp) != 2u && t - arp_t >= step / 2u) {
+                syn_off(arp_note);                /* the gate: half a step (gliding: legato) */
+                arp_note = -1;
+            }
+        } else {
+            for (k = 0; k < NKEYS; k++) {
+                if ((off >> k & 1u) && (SMP_MODE(smp) != 2u || !keys))   /* (gliding: on while a key is held) */
+                    syn_off(syn_key_note[k]);
+                if (on >> k & 1u) {
+                    syn_key_note[k] = (int8_t)(53 + k + 12 * smp.octave);   /* F3 = MIDI 53; C4: as recorded */
+                    syn_on(syn_key_note[k]);
+                }
+            }
+            if (SMP_MODE(smp) == 2u && off && keys && !on) {   /* gliding: let go, back to the highest held */
+                for (k = NKEYS - 1; k > 0 && !(keys >> k & 1u); k--)
+                    ;
+                smp_glide_to(syn_key_note[k]);
             }
         }
+        if (down & (1u << B_ENV)) {               /* poly, chord, glide */
+            smp_all_off();
+            smp.fl = (uint8_t)((smp.fl & ~6u) | ((SMP_MODE(smp) + 1u) % 3u) << 1);
+            ch = 1;
+        }
+        if (down & (1u << B_LFO)) {
+            smp_all_off();
+            smp.fl ^= 8u;
+            arp_note = arp_k = -1;
+            syn_keys = 0;                         /* the held keys start again (as notes, or the arpeggio) */
+            ch = 1;
+        }
+        if (down & (1u << B_EDIT))
+            smp.fl ^= 1u, ch = 1;
+        if (down & (1u << B_SEQ))                 /* dry, resample, through FX */
+            smp.fl = (uint8_t)((smp.fl & ~0x30u) | ((SMP_ROUTE(smp) + 1u) % 3u) << 4), ch = 1;
         ch |= syn_knob(&smp.start, plat_enc(EN_K1));
         ch |= syn_knob(&smp.len, plat_enc(EN_K2));
         ch |= syn_knob(&smp.attack, plat_enc(EN_K3));
@@ -942,7 +1040,7 @@ static void input(void)
         }
         if (syn_changed && plat_ms() - syn_changed_t >= 5000u)   /* kept through a power-off too */
             smp_keep();
-        if (down & ((1u << B_HOME) | (1u << B_ARP)))
+        if ((up & (1u << B_HOME)) || (down & (1u << B_ARP)))   /* HOME on letting go (held: the controls) */
             synth_leave();
     } else if (ui_page == PG_FAV && fav) {
         int n = (int)fav->n + 1;
@@ -1028,10 +1126,14 @@ static void lights(void)
         lb = 1u << B_PLAY | 1u << B_GLO | (sel_valid() ? 1u << B_SEL : 0u);
         if ((plat_ms() - tempo_t0) % (60000u / tempo_bpm) < 90u)
             lb |= 1u << B_FX;                     /* FX flashes on the beat */
-        if (radio_st == RS_PLAYING)               /* the FX keys, and the held ones off as they play */
+        if (radio_st == RS_PLAYING) {             /* the FX keys and buttons, the held ones off as they play; ENV
+                                                   * flashing while it holds some on */
             for (w = 0; w < 27; w++)
                 if (!(fx_held >> w & 1u))
                     lk |= 1u << (w < 16 ? WHITE_KEY[w] : BLACK_KEY[w - 16]);
+            lb |= (~fx_held >> FX_ECHO & 1u) << B_LFO | (~fx_held >> FX_SWEEP & 1u) << B_EDIT |
+                  (~fx_held >> FX_PUMP & 1u) << B_SEQ | (uint32_t)(!fx_latch || plat_ms() % 400u < 200u) << B_ENV;
+        }
     } else if (ui_page == PG_BROWSE) {
         lb = 1u << B_SEL | 1u << B_HOME | 1u << B_PLAY;
     } else if (ui_page == PG_WIFI) {
@@ -1044,6 +1146,7 @@ static void lights(void)
     }
     if (ui_page == PG_SYNTH) {
         lb = 1u << B_HOME | 1u << B_ARP | 1u << B_OCTDN | 1u << B_OCTUP | 1u << B_SEL | 1u << B_PLAY |
+             1u << B_ENV | 1u << B_LFO | 1u << B_EDIT | 1u << B_SEQ |
              (rec_on ? 0u : 1u << B_FX) | (rec_on && plat_ms() % 400u < 200u ? 0u : 1u << B_REC);
         lk = ((1u << NKEYS) - 1u) & ~syn_keys;    /* the keys lit, the held ones off */
     }

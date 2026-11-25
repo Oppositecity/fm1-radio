@@ -92,11 +92,15 @@ static char radio_why[32];
 static int16_t *pcm_tmp;                          /* MINIMP3_MAX_SAMPLES_PER_FRAME, from the heap */
 
 #define FX_HIST 12288u                            /* the FX history, half-rate samples, mu-law: ~557 ms */
+#define FX_SW_N 256u                              /* shortwave's line (int16, 5.8 ms at 44.1 kHz) */
+#define FX_EXTRA (1024u + 256u + FX_SW_N * 2u)    /* after the history: the comb's line, the sampler's page,
+                                                   * shortwave's line */
 static uint8_t *fx_hist;                          /* + the comb's line, + a page for the slots (radio.c FX) */
 
 /* the decoders, one at a time (the RAM): MP3's (minimp3, 11 KB) or AAC's (PacketVideo's, 53 KB), taken when a
  * stream's format is known (its Content-Type: radio_net_aac), the other's given back */
 static uint8_t dec_kind;                          /* 0 none, 1 MP3, 2 AAC */
+static uint8_t dec_sbr;                           /* AAC with SBR: HE-AAC ("AAC+") */
 static tPVMP4AudioDecoderExternal *aac_ext;
 static void *aac_mem;
 static int16_t *aac_out;                          /* a frame: 1024 stereo */
@@ -142,7 +146,7 @@ static void dec_drop(void)
     aac_ext = 0;
     aac_mem = 0;
     aac_out = 0;
-    dec_kind = 0;
+    dec_kind = dec_sbr = 0;
 }
 /* the AAC decoder, as new: after every bad frame too, as the one call that left its state broken (a damaged
  * frame's settings kept: the frames after it failed, or worse) */
@@ -201,10 +205,10 @@ static int radio_alloc(void)
         return -1;
     }
     if (!fx_hist) {                               /* the FX history, kept: without it, no stutters */
-        fx_hist = malloc(FX_HIST + 1024u + 256u);
+        fx_hist = malloc(FX_HIST + FX_EXTRA);
         if (fx_hist) {
             memset(fx_hist, 0xFF, FX_HIST);       /* mu-law silence */
-            memset(fx_hist + FX_HIST, 0, 1024u + 256u);
+            memset(fx_hist + FX_HIST, 0, FX_EXTRA);
         }
     }
     return 0;
@@ -389,7 +393,8 @@ static void radio_poll(void)
                 continue;
             }
             radio_rd += (uint32_t)aac_ext->inputBufferUsedLength;
-            samples = aac_ext->frameLength * (aac_ext->aacPlusUpsamplingFactor == 2 ? 2 : 1);
+            dec_sbr = aac_ext->aacPlusUpsamplingFactor == 2;
+            samples = aac_ext->frameLength * (dec_sbr ? 2 : 1);
             info.hz = (int)aac_ext->samplingRate;
             info.channels = 2;                    /* (mono comes copied into both) */
             info.bitrate_kbps = (int)(aac_ext->bitRate / 1000);
@@ -446,38 +451,43 @@ static void radio_poll(void)
 }
 
 /* ---- punch-in FX: held keys (fx_held, a bit per effect, the main loop's), applied in the audio interrupt. The
- * white keys are upstream's 16; the black keys (bits 16..26) are the sampler fork's glitches.
- * Sources (one at a time, the lowest held): stutters, tape stop, reverse, half speed, scatter, skip, scratch, rise,
- * warble, glitch, played from a history of the last ~557 ms (mono, 22 kHz, mu-law; frozen while a source plays, but
- * for the live ones, which read behind it as it goes). Then the filters, the crushers, the ring modulator, bitflip,
- * fold, comb, shortwave, the chops and gate, and the mute. */
+ * white keys are upstream's 16 (the fork: key 15 octave up for the mute); the black keys (bits 16..26) are the fork's
+ * glitches, and LFO, EDIT, SEQ (27..29) echo, sweep and pump.
+ * Sources (one at a time, the lowest held): stutters, tape stop, reverse, half speed, octave up, scatter, skip,
+ * scratch, rise, warble, glitch, played from a history of the last ~557 ms (mono, 22 kHz, mu-law; frozen while a
+ * source plays, but for the live ones, which read behind it as it goes). Then echo, sweep, the filters, the crushers,
+ * the ring modulator, bitflip, fold, comb, shortwave, the chops, gate and pump. */
 enum { FX_LP, FX_HP, FX_PHONE, FX_CRUSH, FX_ST4, FX_ST8, FX_ST16, FX_ST32, FX_TAPE, FX_REV, FX_CHOP8, FX_CHOP16,
-       FX_RING, FX_HALF, FX_MUTE, FX_LOFI,
-       FX_SCAT, FX_SKIP, FX_SCRATCH, FX_RISE, FX_WARBLE, FX_GLITCH, FX_FLIP, FX_FOLD, FX_COMB, FX_SW, FX_GATE, FX_N };
+       FX_RING, FX_HALF, FX_UP, FX_LOFI,
+       FX_SCAT, FX_SKIP, FX_SCRATCH, FX_RISE, FX_WARBLE, FX_GLITCH, FX_FLIP, FX_FOLD, FX_COMB, FX_SW, FX_GATE,
+       FX_ECHO, FX_SWEEP, FX_PUMP, FX_N };        /* the last three: LFO, EDIT, SEQ held on Home */
 static const char *const FX_NAME[FX_N] = {"low-pass", "high-pass", "telephone", "crush", "stutter 1/8",
     "stutter 1/16", "stutter 1/32", "stutter 1/64", "tape stop", "reverse", "chop 1/8", "chop 1/16", "ring mod",
-    "half speed", "mute", "lo-fi",
-    "scatter", "skip", "scratch", "rise", "warble", "glitch", "bitflip", "fold", "comb", "shortwave", "gate"};
+    "half speed", "octave up", "lo-fi",
+    "scatter", "skip", "scratch", "rise", "warble", "glitch", "bitflip", "fold", "comb", "shortwave", "gate",
+    "echo", "sweep", "pump"};
 #define FX_BIT(k) (1u << (k))
 #define FX_SOURCES (FX_BIT(FX_ST4) | FX_BIT(FX_ST8) | FX_BIT(FX_ST16) | FX_BIT(FX_ST32) | FX_BIT(FX_TAPE) | \
-                    FX_BIT(FX_REV) | FX_BIT(FX_HALF) | FX_BIT(FX_SCAT) | FX_BIT(FX_SKIP) | FX_BIT(FX_SCRATCH) | \
-                    FX_BIT(FX_RISE) | FX_BIT(FX_WARBLE) | FX_BIT(FX_GLITCH))
-#define FX_LIVE (FX_BIT(FX_SKIP) | FX_BIT(FX_WARBLE) | FX_BIT(FX_GLITCH))   /* the history goes on beneath them */
+                    FX_BIT(FX_REV) | FX_BIT(FX_HALF) | FX_BIT(FX_UP) | FX_BIT(FX_SCAT) | FX_BIT(FX_SKIP) | \
+                    FX_BIT(FX_SCRATCH) | FX_BIT(FX_RISE) | FX_BIT(FX_WARBLE) | FX_BIT(FX_GLITCH))
+#define FX_LIVE (FX_BIT(FX_SKIP) | FX_BIT(FX_WARBLE) | FX_BIT(FX_GLITCH) | FX_BIT(FX_HALF) | FX_BIT(FX_UP))
+                                                  /* the history goes on beneath them */
 #define FX_COMB_N 512u                            /* the comb's line, after the history (int16) */
 #define FX_COMB_D 300u                            /* D3, 147 Hz, at 44.1 kHz */
 static volatile uint32_t fx_held;
 static volatile uint32_t fx_beat = 22050u;        /* a beat in output samples (44.1 kHz): the tap tempo, 120 BPM */
 static volatile uint8_t fx_freeze;                /* GRAB copying the history: nothing written into it */
+static float fx_rs;                               /* the sampler, into the history too (its RESAMPLE route) */
 static struct {
     uint32_t hw, half;                            /* history write index, the half-rate phase */
     uint32_t src, start;                          /* the source playing (FX_N: none), where its window starts */
     float pos, speed;                             /* read position in the history (samples), its rate */
-    float lp[2][2], hp[2][2], bp[2][2];           /* the filters' states: [channel][low, band] */
+    float lp[2][2], hp[2][2], bp[2][2], swp[2][2];   /* the filters' states: [channel][low, band] */
     float gate, ring_c, ring_s;                   /* the chop / mute gain; the ring oscillator */
     uint32_t crush_n, chop_n, len, held_was;      /* len: the stutter's loop, history samples */
     float crush_l, crush_r;
-    uint32_t rng, src_n, cw, flip;                /* the glitches': noise, a source's age (output samples), the comb's
-                                                   * write index, bitflip's mask (0: a gap) */
+    uint32_t rng, src_n, cw, flip, sw;            /* the glitches': noise, a source's age (output samples), the comb's
+                                                   * write index, bitflip's mask (0: a gap), shortwave's write index */
     float dly, ph[4];                             /* a live source's delay; slow phases (turns) */
 } fx __attribute__((section(".pool")));                                     /* set up by fx_reset */
 
@@ -547,10 +557,12 @@ static void fx_process(float *l, float *r)
             fx.len = n ? n : 1u;
             fx.start = (fx.hw + FX_HIST - fx.len) % FX_HIST;
             fx.pos = (float)fx.start;
-        } else if (src == FX_TAPE || src == FX_HALF || src == FX_SCRATCH) {
+        } else if (src == FX_HALF || src == FX_UP) {
+            fx.pos = 0.0f;                        /* the grains' phase */
+        } else if (src == FX_TAPE || src == FX_SCRATCH) {
             fx.start = (fx.hw + 1u) % FX_HIST;    /* the oldest: plays the last ~557 ms */
             fx.pos = src == FX_SCRATCH ? (float)((fx.hw + FX_HIST / 2u) % FX_HIST) : (float)fx.start;
-            fx.speed = src == FX_HALF ? 0.25f : 0.5f;
+            fx.speed = 0.5f;
             fx.ph[0] = 0.0f;
         } else if (src == FX_REV) {
             fx.pos = (float)((fx.hw + FX_HIST - 1u) % FX_HIST);
@@ -561,7 +573,7 @@ static void fx_process(float *l, float *r)
     }
     if (src == FX_N || (FX_LIVE >> src & 1u)) {   /* the live sound into the history, at half rate */
         if (fx_hist && !fx_freeze && ++fx.half & 1u)
-            fx_hist[fx.hw = (fx.hw + 1u) % FX_HIST] = mu_enc((int32_t)((*l + *r) * 16383.0f));
+            fx_hist[fx.hw = (fx.hw + 1u) % FX_HIST] = mu_enc((int32_t)((*l + *r + 2.0f * fx_rs) * 16383.0f));
     }
     if (src != FX_N) {
         float v;
@@ -588,6 +600,17 @@ static void fx_process(float *l, float *r)
                 d += 300.0f * fx_sin(fx.ph[0]) + 25.0f * fx_sin(fx.ph[1]);
             }
             v = fx_hist_at((float)fx.hw - d);
+        } else if (src == FX_HALF || src == FX_UP) {   /* half speed / octave up: the radio going on, an octave down
+                                                   * or up: two grains (93 ms) half a grain apart, crossfaded, each
+                                                   * read behind the live history at half or twice its speed */
+            float hw = (float)fx.hw + (fx.half & 1u ? 0.0f : 0.5f), ph = fx.pos, q;
+            ph += (src == FX_HALF ? 0.25f : -0.5f) * (1.0f / 2048.0f);
+            ph -= fm_floorf(ph);
+            fx.pos = ph;
+            q = ph + 0.5f;
+            q -= (float)(int)q;
+            v = fx_hist_at(hw - 32.0f - ph * 2048.0f) * (1.0f - fm_fabsf(2.0f * ph - 1.0f)) +
+                fx_hist_at(hw - 32.0f - q * 2048.0f) * (1.0f - fm_fabsf(2.0f * q - 1.0f));
         } else {
             v = fx_hist_at(fx.pos);
             if (src == FX_SCRATCH) {              /* the head rocks, a cycle a beat */
@@ -614,6 +637,22 @@ static void fx_process(float *l, float *r)
                 fx.pos += (float)FX_HIST;
         }
         *l = *r = v;
+    }
+    if ((held >> FX_ECHO & 1u) && fx_hist) {      /* echo: the history 1/8 and 1/4 note back (halved while too long) */
+        uint32_t d = fx_beat >> 2;                /* a 1/8 note in history samples (half rate) */
+        float e;
+        while (2u * d > FX_HIST - 64u)
+            d >>= 1;
+        e = 0.45f * fx_hist_at((float)(fx.hw + FX_HIST - d)) + 0.25f * fx_hist_at((float)(fx.hw + FX_HIST - 2u * d));
+        *l = fm_clampf(*l + e, -1.0f, 1.0f);
+        *r = fm_clampf(*r + e, -1.0f, 1.0f);
+    }
+    if (held >> FX_SWEEP & 1u) {                  /* sweep: a resonant low-pass opening and closing, 2 beats a round,
+                                                   * from the press */
+        float u = 0.5f + 0.5f * fx_sin((float)(fx.chop_n % (2u * fx_beat)) / (float)(2u * fx_beat)), f;
+        f = 0.03f + 0.62f * u * u;
+        *l = fx_svf(fx.swp[0], *l, f, 0.35f, 0);
+        *r = fx_svf(fx.swp[1], *r, f, 0.35f, 0);
     }
     if (held >> FX_LP & 1u) {                     /* 500 Hz */
         *l = fx_svf(fx.lp[0], *l, 0.0712f, 0.5f, 0);
@@ -666,24 +705,34 @@ static void fx_process(float *l, float *r)
         line[fx.cw = (fx.cw + 1u) % FX_COMB_N] = (int16_t)(y * 32767.0f);
         *l = *r = y;
     }
-    if (held >> FX_SW & 1u) {                     /* shortwave: slow, uneven fading, a heterodyne whistle drifting */
-        float g, w;
+    if ((held >> FX_SW & 1u) && fx_hist) {        /* shortwave: multipath, the radio and itself 0.2..4.5 ms later (the
+                                                   * delay drifting, so its notches sweep), with slow, uneven fading.
+                                                   * Only the radio: nothing added */
+        int16_t *line = (int16_t *)(fx_hist + FX_HIST + 1024u + 256u);
+        float g, d, p, t, a, v;
+        uint32_t i;
         fx.ph[2] += 0.23f / 44100.0f;
-        fx.ph[3] += (900.0f + 350.0f * fx_sin(fx.ph[2] * 0.3f)) / 44100.0f;
+        fx.ph[3] += 0.07f / 44100.0f;
         fx.ph[2] -= (float)(int)fx.ph[2];
         fx.ph[3] -= (float)(int)fx.ph[3];
+        line[fx.sw = (fx.sw + 1u) % FX_SW_N] = (int16_t)((*l + *r) * 16383.0f);
+        d = 104.0f + 70.0f * fx_sin(fx.ph[3]) + 24.0f * fx_sin(fx.ph[2] * 1.7f);   /* 10..198 samples */
+        p = (float)(fx.sw + FX_SW_N) - d;
+        i = (uint32_t)p;
+        t = p - (float)i;
+        a = (float)line[i % FX_SW_N];
+        v = (a + ((float)line[(i + 1u) % FX_SW_N] - a) * t) * (1.0f / 32768.0f);
         g = fx_sin(fx.ph[2]) * fx_sin(fx.ph[2] * 2.7f);
-        g = 0.55f + 0.45f * g;
-        w = 0.05f * fx_sin(fx.ph[3]);
-        *l = *l * g + w;
-        *r = *r * g + w;
+        g = (0.55f + 0.45f * g) * 0.6f;
+        *l = (*l + v) * g;
+        *r = (*r + v) * g;
     }
     {   /* the chops (1/8 or 1/16 notes at the tempo, open for the first half, from the press), gate (16 steps of
-         * 1/16) and the mute: a gain that moves in 2 ms, not a click */
+         * 1/16) and pump: a gain that moves in 2 ms, not a click */
         float target = 1.0f;
         uint32_t chops = held & (1u << FX_CHOP8 | 1u << FX_CHOP16 | 1u << FX_GATE);
-        if (chops & ~fx.held_was)
-            fx.chop_n = 0;                        /* a chop pressed: it starts open, on the press */
+        if ((chops | (held & (1u << FX_PUMP | 1u << FX_SWEEP))) & ~fx.held_was)
+            fx.chop_n = 0;                        /* a chop (pump, sweep) pressed: it starts on the press */
         fx.held_was = held;
         fx.chop_n++;
         if (chops & (1u << FX_CHOP8 | 1u << FX_CHOP16)) {
@@ -694,8 +743,10 @@ static void fx_process(float *l, float *r)
         }
         if (held >> FX_GATE & 1u)                 /* x.xx.x.xx.xx.x.x, a bar round */
             target *= (float)(0xB5B6u >> (fx.chop_n / s16 % 16u) & 1u);
-        if (held >> FX_MUTE & 1u)
-            target = 0.0f;
+        if (held >> FX_PUMP & 1u) {               /* pump: ducked at each beat, back by the next (a sidechain) */
+            float t = 1.0f - (float)(fx.chop_n % fx_beat) / (float)fx_beat;
+            target *= 1.0f - 0.85f * t * t * t;
+        }
         fx.gate += (target - fx.gate) * 0.011f;
         *l *= fx.gate;
         *r *= fx.gate;
@@ -832,10 +883,18 @@ static void radio_render(int32_t *o, uint32_t n)
         } else if (playing) {
             radio_underruns++;
         }
-        if (playing)
-            fx_process(&l, &rr);
-        {   /* the sampler over it (app/sampler.c), the sum held to full scale */
+        {   /* the sampler (app/sampler.c): over the effects (DRY), into the history too (RESAMPLE), or through the
+             * effects (THRU FX); the sum held to full scale */
             float sy = smp_next();
+            uint32_t route = SMP_ROUTE(smp);
+            fx_rs = route == 1u ? sy : 0.0f;
+            if (route == 2u) {
+                l += sy;
+                rr += sy;
+                sy = 0.0f;
+            }
+            if (playing || route)
+                fx_process(&l, &rr);
             l = fm_clampf(l + sy, -1.0f, 1.0f);
             rr = fm_clampf(rr + sy, -1.0f, 1.0f);
         }

@@ -8,7 +8,7 @@ becomes a chromatic sampler with banks kept in flash, and the 11 black keys on H
 | | Upstream 1.3.1 | This fork |
 |---|---|---|
 | Code (XIP slot) | 12 bytes spare | the new code is paid for by dropping FONT_XS (~7.3 KB of data): the knob labels and the password keys use FONT_S. On x86 -Os the fork is ~3.7 KB smaller than upstream; the device build is the real measure |
-| Heap, HE-AAC station | ~18 KB spare | +1 KB (the comb's line) |
+| Heap, HE-AAC station | ~18 KB spare | +1.75 KB (the comb's line 1 KB, the sampler's page 256 B, shortwave's line 512 B) |
 | FX history | 12 KB, int16 at 22 kHz, ~280 ms | same 12 KB, mu-law 8-bit at 22 kHz, **~557 ms** |
 | Sample storage | none | **XDATA1 (92 KB) + XDATA0 (16 KB)**, flash windows Radio never used |
 
@@ -18,7 +18,7 @@ LOOM-8's do. RAM only stages them.
 ## 1. The history goes mu-law
 
 `fx_hist` changes from `int16_t[6144]` to `uint8_t[12288]` of G.711 mu-law. It's the same RAM and twice the time.
-- The stutters, tape stop, reverse and half speed get ~557 ms instead of ~280 ms. 1/8 stutter now holds down to ~54
+- The stutters, tape stop and reverse get ~557 ms instead of ~280 ms. 1/8 stutter now holds down to ~54
   BPM (was ~108).
 - That history is also what GRAB copies from.
 
@@ -42,7 +42,15 @@ shorter).
 | **KNOB 4** | release |
 | **OCT -/+** | two octaves each way |
 | **PLAY** | the radio, play / stop (so you can sample without leaving) |
-| **HOME / ARP** | back |
+| **EDIT** | reverse on / off |
+| **ENV** | poly / chord (a major triad a key) / glide (1 voice, ~40 ms slide; letting go glides back to the highest held) |
+| **LFO** | arpeggio: held keys low to high, a 1/16 each at the tap tempo, half-step gate (legato when gliding) |
+| **SEQ** | route: dry / resample (the sampler into the history, so GRAB takes it) / thru FX (through the Home effects) |
+| **HOME** (hold) | the sampler's controls page; letting go comes back here |
+| **HOME** (tap, on letting go) / **ARP** | back |
+
+The modes live in `smp_set_t.fl` (the struct's spare byte, so the saved settings keep their layout) and show on the
+bottom row: LOOP, REV, POLY/CHORD/GLIDE, ARP, DRY/RESAMPLE/THRU FX, teal when on.
 
 ### Slots: the "save"
 
@@ -83,8 +91,19 @@ Black keys are bits 16..26 of `fx_held`. Sources (one at a time, the lowest held
 | G#4 | **bitflip**: bursts of flipped bits in the 16-bit sample | post |
 | A#4 | **fold**: wavefolder | post |
 | C#5 | **comb**: a resonator at D3, the radio as a string | post (1 KB) |
-| D#5 | **shortwave**: ionospheric fading and a drifting heterodyne whistle | post |
+| D#5 | **shortwave**: multipath (the radio plus itself 0.2-4.5 ms later, drifting: sweeping notches) and ionospheric fading; only the radio, nothing synthesized | post (512 B) |
 | F#5 | **gate**: a 16-step trance gate on the tap tempo | post |
+
+Also on Home (FX bits 27..29, held buttons; key 15 changed):
+
+| Control | Effect | Kind |
+|---|---|---|
+| white 14 | **half speed**: now two crossfaded 93 ms grains read behind the live history at half speed: the radio goes on, an octave down (was: the last ~557 ms looped) | live source |
+| white 15 | **octave up** (was mute): the same at twice the speed | live source |
+| **LFO** | **echo**: the history 1/8 and 1/4 note back (halved while longer than the history) | post |
+| **EDIT** | **sweep**: a resonant low-pass, 210 Hz to ~5 kHz and back every 2 beats, from the press | post |
+| **SEQ** | **pump**: ducked to 0.15 on each beat, back by the next (cubic), from the press | post (gain) |
+| **ENV** | **latch**: what is held when pressed stays on (on every page) until ENV again | - |
 
 ## 4. If it doesn't fit (the order to cut)
 

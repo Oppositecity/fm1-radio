@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MPL-2.0
  * Copyright (C) 2026 Charles Vestal; the sampler fork's changes (notes/SAMPLER-FORK.md) */
-/* The sampler for the keys (ARP's page), in the synth's place: 4 voices, each reading the slot's sound from flash in
+/* The sampler for the keys (ARP's page), in the synth's place: 4 voices (1 when gliding), each reading the slot's
+ * sound, forwards or reversed, from flash in
  * place (plat_data: mu-law, 8 bits, SMP_RATE) at a key's speed, C4 as it was recorded and a semitone a key (varispeed,
  * as an SK-1 or a Mirage: higher is shorter), with linear interpolation, through an attack / release envelope (full
  * sustain while held), then a soft limit (tanh). smp_next() runs in the audio interrupt (radio_render), a sample at a
@@ -45,14 +46,19 @@ static const uint32_t SMP_SIZE[SMP_SLOTS] = {0x7000u, 0x7000u, 0x7000u, 0x4000u}
 typedef struct {
     uint8_t start, len, attack, release, slot, loop;
     int8_t octave;
-    uint8_t rsv;
+    uint8_t fl;                                   /* the page's modes (was spare, 0): SMP_REV .. SMP_ROUTE */
     uint32_t n[SMP_SLOTS];                        /* each slot's length, samples (bytes); 0 empty */
 } smp_set_t;
+#define SMP_REV(s) ((s).fl & 1u)                  /* EDIT: the slot backwards */
+#define SMP_MODE(s) ((s).fl >> 1 & 3u)            /* ENV: 0 poly, 1 chord (a major triad a key), 2 glide (one voice) */
+#define SMP_ARP(s) ((s).fl >> 3 & 1u)             /* LFO: the held keys in turn, a 1/16 each at the tap tempo */
+#define SMP_ROUTE(s) ((s).fl >> 4 & 3u)           /* SEQ: 0 dry, 1 resample (into the history), 2 through the FX */
 static const smp_set_t SMP_DEFAULT = {0, 127, 2, 40, 0, 0, 0, 0, {0, 0, 0, 0}};
 static smp_set_t smp = {0, 127, 2, 40, 0, 0, 0, 0, {0, 0, 0, 0}};
 
 typedef struct {
-    float pos, inc, env;                          /* read position in the slot (samples), its step; the envelope */
+    float pos, inc, env, tgt;                     /* read position in the slot (samples), its step; the envelope; the
+                                                   * step it glides to */
     uint8_t note, gate, on;
     uint32_t age;
 } smp_voice_t;
@@ -60,6 +66,7 @@ static smp_voice_t smv[SMP_VOICES];
 static uint32_t smp_age;
 static const uint8_t *volatile smp_base;          /* the slot's sound in flash; 0: none (empty) */
 static volatile float smp_a, smp_b;               /* the window played: from, to (samples) */
+static volatile float smp_dir = 1.0f;             /* 1 forward, -1 reversed */
 static float smp_att, smp_rel;
 
 static float smp_attack_ms(void) { return fm_exp2f(10.966f * (float)smp.attack / 127.0f); }          /* 1..2000 */
@@ -82,6 +89,7 @@ static void smp_update(void)                      /* the window, the envelope's 
     smp_b = b;
     smp_att = 1000.0f / (smp_attack_ms() * 44100.0f);
     smp_rel = 1000.0f / (smp_release_ms() * 44100.0f);
+    smp_dir = SMP_REV(smp) ? -1.0f : 1.0f;
     smp_base = n >= 64u ? plat_data(SMP_OFF[smp.slot]) : 0;
 }
 
@@ -91,6 +99,11 @@ static void smp_init(void)
     for (i = 0; i < SMP_VOICES; i++)
         smv[i].on = smv[i].gate = 0, smv[i].env = 0.0f;
     smp_update();
+}
+
+static float smp_inc(int note)                    /* a note's step through the slot, a sample out */
+{
+    return fm_exp2f((float)(note - SMP_ROOT) / 12.0f) * (SMP_RATE / 44100.0f);
 }
 
 static void smp_note_on(int note)
@@ -112,8 +125,8 @@ static void smp_note_on(int note)
 take:
     smv[v].on = 0;                                /* (the interrupt leaves it alone while it changes) */
     smv[v].note = (uint8_t)note;
-    smv[v].inc = fm_exp2f((float)(note - SMP_ROOT) / 12.0f) * (SMP_RATE / 44100.0f);
-    smv[v].pos = smp_a;
+    smv[v].inc = smv[v].tgt = smp_inc(note);
+    smv[v].pos = smp_dir < 0.0f ? smp_b - 1.0f : smp_a;
     smv[v].env = 0.0f;
     smv[v].age = ++smp_age;
     smv[v].gate = 1;
@@ -126,6 +139,19 @@ static void smp_note_off(int note)
     for (i = 0; i < SMP_VOICES; i++)
         if (smv[i].gate && smv[i].note == note)
             smv[i].gate = 0;
+}
+
+static void smp_hush(void);
+static void smp_glide_to(int note)                /* glide: one voice, sliding to the note (started if none holds) */
+{
+    smp_voice_t *v = &smv[0];
+    if (v->on && v->gate) {
+        v->note = (uint8_t)note;
+        v->tgt = smp_inc(note);
+        return;
+    }
+    smp_hush();
+    smp_note_on(note);                            /* all free: voice 0 */
 }
 
 static void smp_all_off(void)
@@ -169,19 +195,20 @@ static float smp_next(void)                       /* a sample of the mix (the au
             }
         }
         p = v->pos;
-        if (p >= b || p < a) {                    /* the window's end: round again, or the voice is done */
-            if (!smp.loop || p < a) {
+        if (p >= b || p < a) {                    /* the window's end (either way): round again, or the voice is done */
+            if (!smp.loop) {
                 v->on = 0;
                 continue;
             }
-            p = a + (p - b);
-            if (p >= b)
-                p = a;
+            p = p < a ? b - (a - p) : a + (p - b);
+            if (p >= b || p < a)
+                p = smp_dir < 0.0f ? b - 1.0f : a;
         }
         k = (uint32_t)p;
         x = mu_dec(s[k]);
         x += (mu_dec(s[k + 1u]) - x) * (p - (float)k);
-        v->pos = p + v->inc;
+        v->inc += (v->tgt - v->inc) * 0.0006f;    /* glide: ~40 ms */
+        v->pos = p + v->inc * smp_dir;
         sum += x * v->env;
         any = 1;
     }

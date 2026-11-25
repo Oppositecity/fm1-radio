@@ -129,6 +129,8 @@ the strongest saved network it hears (hearing none, it tries each saved one in t
 | **SAVE** | Favorites. |
 | **ARP** | The sampler: the keys play a sound caught from the radio. |
 | **GLO** | The WiFi page, and back. |
+| **LFO** / **EDIT** / **SEQ** (hold) | Echo, sweep, pump (see the effects below). |
+| **ENV** | Latch: the effects held now stay on after you let go; **ENV** again lets them go. |
 | Hold **HOME** | The controls, on the screen. |
 
 The knobs work as a dial: turn them, and the radio tunes once you stop. A new place takes a second or
@@ -171,8 +173,15 @@ slots holds a sound caught from the radio. **C4** plays it as it was caught, and
 | **KNOB 3** | Attack: 1 ms to 2 s. |
 | **KNOB 4** | Release: 5 ms to 3 s. |
 | **OCT-** / **OCT+** | Octaves, two each way. |
+| **EDIT** | Reverse on or off. |
+| **ENV** | Poly, chord (each key a major triad) or glide (one voice, sliding to each new key). |
+| **LFO** | Arpeggio on or off: the held keys in turn, low to high, a 1/16 each at the tap tempo. |
+| **SEQ** | Dry (over the effects), resample (your playing goes into the history too, so **FX** grabs it with the radio), or thru FX (through the Home effects: latch some with **ENV** first). |
 | **PLAY** | The radio: play or stop. |
+| Hold **HOME** | The sampler's controls, on the screen. |
 | **HOME** or **ARP** | Back to the radio (the keys are the effects again). |
+
+The bottom row shows the modes: LOOP, REV, POLY / CHORD / GLIDE, ARP and DRY / RESAMPLE / THRU FX, lit when on.
 
 The slots are kept in the FM-1's flash (8-bit, 11 kHz): slots 1 to 3 hold about 2.6 s each, slot 4 about 1.5 s.
 REC first clears the slot, a moment of silence, then records. Another firmware that uses the same flash (LOOM-8's
@@ -203,8 +212,8 @@ stop it. Hold several to mix them. The screen shows what is held, and a held key
 | 11 | Chop, 1/8: open for the first half of each eighth note, from your press |
 | 12 | Chop, 1/16 |
 | 13 | Ring modulator |
-| 14 | Half speed |
-| 15 | Mute |
+| 14 | Half speed: the radio going on, an octave down |
+| 15 | Octave up: the radio going on, an octave up |
 | 16 | Lo-fi |
 
 ### Glitches on the black keys
@@ -220,17 +229,28 @@ stop it. Hold several to mix them. The screen shows what is held, and a held key
 | G#4 | Bitflip: bursts of flipped bits |
 | A#4 | Fold: a wavefolder |
 | C#5 | Comb: a resonator at D3, the radio as a string |
-| D#5 | Shortwave: slow fading and a drifting heterodyne whistle |
+| D#5 | Shortwave: multipath, the radio beside itself a few ms later (sweeping notches), with slow fading |
 | F#5 | Gate: a 16-step gate on the tempo |
 
 Scatter, skip, scratch, rise, warble and glitch play from the history, as the stutters do (the lowest key held
 wins); the rest work on top.
 
+### Echo, sweep, pump and latch
+
+| Button (Home, held) | Effect |
+|---|---|
+| **LFO** | Echo: the radio again a 1/8 and a 1/4 note later (from the history: about half a second at most) |
+| **EDIT** | Sweep: a resonant low-pass opening and closing, every two beats |
+| **SEQ** | Pump: ducked on each beat and back by the next, as a sidechain does |
+| **ENV** | Latch: whatever is held when you press it stays on, keys and buttons, until **ENV** again (it flashes meanwhile) |
+
+Latched effects stay on in the sampler too, and the sampler's thru FX plays through them.
+
 ![Home with stutter 1/4 held](docs/img/fx.png)
 
-The stutters, tape stop, reverse and half speed play back the last half second, in mono. Only one
-of them plays at a time: with two held, the lower key wins. The filters, crushers, ring modulator,
-chops and mute work on top of them.
+The stutters, tape stop and reverse play back the last half second, in mono; half speed and octave up follow the
+radio as it goes. Only one of them plays at a time: with two held, the lower key wins. The filters, crushers, ring
+modulator and chops work on top of them.
 
 **Tap tempo.** The stutters and chops follow a tempo, 120 BPM at start. Tap **FX** on Home in time
 with the music to set it: the last four taps count, and a pause of two seconds starts a new count. The

@@ -100,6 +100,34 @@ int main(void)
             pk = fmaxf(pk, fabsf(smp_next()));
         check(pk <= 1.0f, "4 voices stay under full scale");
     }
+    smp_hush();
+    smp.start = 0;                                /* reverse: the whole slot backwards, at the same pitch */
+    smp.len = 127;
+    smp.fl = 1u;
+    smp_update();
+    smp_note_on(SMP_ROOT);
+    check(smv[0].pos > (float)n - 64.0f, "reverse starts at the window's end");
+    i = crossings(44100);
+    check(i >= 438 && i <= 444 && fabsf(smv[0].pos - ((float)n - 1.0f - SMP_RATE)) < 64.0f,
+          "reverse plays it backwards, 1 s back (441 Hz)");
+    crossings(44100 + 4410);
+    check(voices_on() == 0, "reverse one shot ends at the window's start");
+    smp.fl = 0u;
+    smp_update();
+
+    smp.fl = 2u << 1;                             /* glide: one voice, sliding an octave up */
+    smp.loop = 1;
+    smp_glide_to(SMP_ROOT);
+    smp_glide_to(SMP_ROOT + 12);
+    check(voices_on() == 1 && smv[0].note == SMP_ROOT + 12, "glide: one voice, the new note");
+    crossings(44100 / 2);                         /* ~40 ms to arrive */
+    i = crossings(22050);
+    check(i >= 436 && i <= 446, "glide arrives an octave up (882 Hz)");
+    smp_all_off();
+    crossings(4410);
+    smp.fl = 0u;
+    smp.loop = 0;
+
     smp.n[0] = 0;
     smp_update();
     check(smp_next() == 0.0f, "an empty slot is silent");
